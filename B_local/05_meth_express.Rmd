@@ -1,0 +1,787 @@
+---
+title: "meth express box plots"
+output:
+  html_notebook:
+    code_folding: none
+---
+
+```{r setup, include=FALSE}
+current_directory <- dirname(rstudioapi::getActiveDocumentContext()$path)
+knitr::opts_knit$set(root.dir=normalizePath(paste0(current_directory)))
+```
+
+```{r load_libraries, include=FALSE}
+## load libraries 
+library(DESeq2)
+library(GenomicRanges)
+library(rtracklayer)
+library(fuzzyjoin)
+library(multcomp)
+library(ggpubr)
+library(ggnewscale)
+library(ggtext)
+library(tidyverse)
+```
+
+### Get sex gene coordinates
+
+`## get genomic positions for your sex gene sequences with minimap`
+
+`module load minimap2`
+
+`minimap2 -a TemasekBarraGenome.fa 20191218_Lca_SexGenes_TSS.fasta > Lca_SexGenes_TSS.sam`
+
+`## convert and sort to get a .bam file using samtools`
+
+`module load samtools/1.5`
+
+`samtools sort -@ 8 -o Lca_SexGenes_TSS.bam Lca_SexGenes_TSS.sam`
+
+`## then convert to a bed file using bedtools `
+
+`module load bedtools`
+
+`bedtools bamtobed -i Lca_SexGenes_TSS.bam > Lca_SexGenes_TSS.bed`
+
+`## then you can use bedtools intersect to get the stringtie gene_ids for your sex genes`
+`## if you also want the data from lca sex genes bed file you can use the -wb option`
+
+`bedtools intersect -a $PWD/StringTieMerged_20191218.gtf -b Lca_SexGenes_TSS.bed -wb > Lca_SexGenes_TSS_Coords_all_wb.txt`
+
+`## OR for genome...`
+
+`bedtools intersect -a $PWD/TemasekBarraGenome_Annotation.gff3 -b Lca_SexGenes_TSS.bed -wb > lca_sex_genes_TSS_coords_all_wb_genome.txt`
+
+
+```{r}
+## format bed files
+header <- c("chr", "source", "type","start", "end", "score", "strand", "phase", 
+               "gene_info", "chr_gene", "start_gene", "end_gene", "name", "sixty", "strand_gene")
+
+## read in file (bed ish format)
+bed_unmod <- as.data.frame(read.table("dataFiles/lca_sex_genes_TSS_coords_all_wb_genome.txt",
+                                      col.names=header,
+                                      header=FALSE, sep="\t",stringsAsFactors=FALSE, quote=""))
+
+
+## split gene_info column
+exons <- bed_unmod %>%
+ ## edit so ggf3 matches bed
+ mutate(start_gene=start_gene+1) %>%
+ ## edit for sox9 
+ mutate(type=ifelse(type == "five_prime_UTR" & start == 9829934,
+                      "CDS", type)) %>%
+ ## filter for CDS (check these line up with start and end gene)
+ filter(type == "CDS") %>%
+ select(chr, source, type, start, end, strand, name) %>%
+ ## rename CDS to exon (you'll have everything but the UTR)
+ mutate(type=gsub("CDS", "exon", type), 
+        ## edit name column
+        name=gsub("Lates_calcarifer_", "", name) %>%
+         gsub("_TSS", "", .)) %>%
+ ## number exons according to strandedness
+ arrange(name, strand, start) %>%
+ group_by(name, strand) %>%
+ mutate(exon_number=if_else(strand == "+", row_number(), rev(row_number()))) %>%
+ ungroup()
+
+## gene body
+gene_body_bed <- exons %>%
+ group_by(name) %>%
+ mutate(gene_start=min(start),  # end of the current exon + 1
+        gene_end=max(end)) %>%
+ select(-start, -end, -exon_number) %>%
+ rename(start=gene_start, 
+        end=gene_end) %>%
+ mutate(type="gene") %>%
+ unique(.) %>%
+ mutate(score=".") %>%
+ select(chr, start, end, name, score, strand)
+ 
+## first exons (bed)
+first_exons_bed <- exons %>%
+ filter(exon_number == 1) %>%
+ mutate(score=".") %>%
+ select(chr, start, end, name, score, strand)
+
+## introns
+introns <- exons %>%
+ group_by(name) %>%
+ mutate(intron_start=if_else(strand=="+", end+1, lag(end)+1),  # end of the current exon + 1
+        intron_end=if_else(strand=="+", lead(start)-1, start-1)) %>%  # start of the next exon - 1
+ select(-start, -end) %>%
+ rename(start=intron_start, 
+        end=intron_end) %>%
+ mutate(type="intron") %>%
+ na.omit(.) #%>%
+ # mutate(length=end-start)
+
+## first introns (bed)
+first_introns_bed <- introns %>%
+ filter(exon_number == 1) %>%
+ mutate(score=".") %>%
+ select(chr, start, end, name, score, strand)
+
+## first exon/intron (bed)
+first_exon_intron_bed <- rbind(first_introns_bed %>% mutate(type="intron"), 
+                               first_exons_bed %>% mutate(type="exon")) %>%
+ group_by(name) %>%
+ mutate(exon_intron_start=min(start),
+        exon_intron_end=max(end)) %>%
+ select(-start, -end) %>%
+ rename(start=exon_intron_start, 
+        end=exon_intron_end) %>%
+ select(chr, start, end, name, score, strand) %>%
+ unique(.)
+
+## promoter (bed)
+len <- 2000
+promoter_bed <- first_exons_bed %>%
+ group_by(name) %>%
+ mutate(promoter_start=if_else(strand=="+", min(start)-len, max(end)), 
+        promoter_end=ifelse(strand=="+", min(start), max(end)+len)) %>%
+ select(-start, -end) %>%
+ rename(start=promoter_start, 
+        end=promoter_end) %>%
+ select(chr, start, end, name, score, strand)
+```
+
+```{r message=FALSE, warning=FALSE}
+## import methyl raw list (takes ages)
+myobj.filt.norm <- readRDS("dataFiles/myobj_filt_norm.rds")
+```
+
+```{r}
+## function to convert a tibble to a GRanges object
+convertToGRanges <- function(bed_tibble) {
+ granges_obj <- GRanges(
+  seqnames=Rle(bed_tibble$chr),
+  ranges=IRanges(start=bed_tibble$start, end=bed_tibble$end),
+  strand=Rle(bed_tibble$strand),
+  name=bed_tibble$name,
+  score=bed_tibble$score
+ )
+ return(granges_obj)
+}
+```
+
+```{r warning=FALSE, message=FALSE}
+## get methylation data for each regions and each gene and each sample
+
+## loop for all instead
+types <- c("first_exons", "first_introns", "gene_body", "promoter")
+
+# Initialize the final result list outside the loops
+all_types_meth <- NULL
+
+# Loop by type
+for (type in types) {
+  
+  ## depending on the type, assign the appropriate bed object
+  
+  ## dynamically create the variable name ...
+  bed_variable_name <- paste(type, "bed", sep="_")
+  ## ... and get its value
+  current_bed <- get(bed_variable_name)
+  
+  # Initialize the results list for this type
+  type_meth <- NULL
+  
+  # Loop by gene
+  for (gn in levels(factor(current_bed$name))) {
+    
+    ## convert to granges and filter by gene
+    temp_gene <- convertToGRanges(current_bed %>%
+                                    filter(name == gn))
+    
+    temp_meth <- NULL
+    
+    ## loop by sample
+    for (smpl in 1:length(myobj.filt.norm)) {
+      
+      ## apply selectByOverlap to each methylRaw object
+      temp_result <- selectByOverlap(myobj.filt.norm[[smpl]], temp_gene)
+      
+      ## add the result to the results list, including treatment/sample ID
+      temp_gene_meth <- as(temp_result, "data.frame") %>%
+        mutate(sample=myobj.filt.norm[[smpl]]@sample.id)
+      
+      temp_meth <- rbind(temp_gene_meth, temp_meth)
+      
+    }
+    
+    type_meth <- rbind(temp_meth %>% mutate(gene=gn), 
+                       type_meth)
+    
+  }
+  
+  ## add the type to the results and combine with the overall results
+  all_types_meth <- rbind(type_meth %>% mutate(type=type), 
+                          all_types_meth)
+  
+}
+
+## edit df
+all_types_meth <- all_types_meth %>%
+ mutate(treatment=sub("D.*", "", sample)) %>% 
+ mutate(treatment=gsub("F", "FT", treatment) %>% 
+         gsub("34", "HT", .) %>%
+         gsub("28", "Control", .) %>% 
+         gsub("24", "LT", .)) %>%
+ mutate(treatment=factor(treatment, levels=c("Control", "LT", "FT", "HT")),
+        methylation_percentage=numCs / (numCs + numTs) * 100) 
+
+all_types_meth_mean <- all_types_meth %>%
+ group_by(type, treatment, gene, sample) %>%
+ summarise(mean_methylation=mean(methylation_percentage))
+
+## NB warnings were coverage was too low or there were not many CpG sites - e.g., introns.
+```
+
+```{r}
+## stats
+logitTransform <- function(p) {
+  # Define a small value to prevent log(0) or log(inf)
+  eps <- .Machine$double.eps^0.5
+  
+  # Ensure p is within (0,1) exclusive
+  p_adj <- p
+  p_adj[p == 0] <- eps
+  p_adj[p == 1] <- 1 - eps
+  
+  # Perform the logit transform
+  log(p_adj / (1 - p_adj))
+}
+```
+
+```{r warning=FALSE}
+## not mean
+all_types_meth_stats <- NULL
+
+for (typ in levels(factor(all_types_meth$type))) {
+ temp_data <- filter(all_types_meth, type == typ)
+ 
+ temp_data_type <- NULL
+ 
+ for (gn in levels(factor(temp_data$gene))) {
+  temp_data_gene <- filter(temp_data, gene == gn) %>%
+   mutate(proportion=methylation_percentage/100)
+  
+  ## stats
+  temp_data_gene$logitMeth <- logitTransform(temp_data_gene$proportion)
+  
+  ## check if 'treatment' has at least two levels
+  if(length(unique(temp_data_gene$treatment)) >= 2) {
+    
+    ## perform the analysis
+    aov_results <- aov(logitMeth ~ treatment, data=temp_data_gene)
+    tukey_results <- summary(glht(aov_results, linfct=mcp(treatment="Tukey")), test=adjusted("BH"))
+    
+    temp_cld <- as.data.frame(cld(tukey_results)$mcletters$Letters, rownames=NULL) %>%
+      rownames_to_column(var="treatment") %>%
+      rename_with(~ ifelse(grepl("Letters", .x), "letters", .x))
+  } else {
+    ## create a placeholder data frame with NA values or a specific indicator
+    temp_cld <- data.frame(treatment=NA, letters=NA)
+    warning("Not enough treatment levels to perform ANOVA/Tukey. Filling with NAs.")
+  }
+  
+  temp_data_gene <- left_join(temp_data_gene, temp_cld, by=join_by(treatment)) %>%
+    mutate(max_value = max(methylation_percentage),
+           range = max(methylation_percentage) - min(methylation_percentage),
+           ylabelpos=max_value + (0.5 * range) + 0.05 * max_value) ## needs work
+  
+  temp_data_type <- rbind(temp_data_gene, temp_data_type)
+
+ }
+ 
+ all_types_meth_stats <- rbind(temp_data_type, all_types_meth_stats)
+}
+
+all_types_meth_stats <- all_types_meth_stats %>% 
+      mutate(treatment=factor(treatment, levels=c("Control", "LT", "FT", "HT")))
+```
+
+```{r}
+mycolours <- c("#3B528BFF", "#21908CFF", "#8FD744FF", "#ED7953FF")
+```
+
+```{r fig.width=8, fig.height=11}
+bp <- ggplot(all_types_meth_stats, 
+             aes(x=treatment, y=methylation_percentage)) +
+ geom_boxplot(aes(fill=treatment)) +
+ geom_point()+
+ scale_fill_manual(values=mycolours)+
+ labs(x="Treatment", y=paste0("Methylation (%)")) +
+ ylim(0, 115)+
+ theme_bw()+
+ geom_text(aes(x=treatment,
+               y=110,
+               label=letters),
+           check_overlap = TRUE,
+           size=3)
+
+bp+facet_grid(cols=vars(type),
+            rows=vars(gene),
+            space="free",
+            scales="free")
+```
+
+Not much visible in introns, this is because there are either very few CpG sites here (e.g., cyp19a1a: n=1; sox9: n=2), there is no intron (foxl2) or coverage was low (e.g., esr1, dmrt1).
+
+### Averages
+
+```{r warning=FALSE}
+all_types_meth_mean_stats <- NULL
+
+for (typ in levels(factor(all_types_meth_mean$type))) {
+ temp_data <- filter(all_types_meth_mean, type == typ)
+ 
+ temp_data_type <- NULL
+ 
+ for (gn in levels(factor(temp_data$gene))) {
+  temp_data_gene <- filter(temp_data, gene == gn) %>%
+   mutate(proportion=mean_methylation/100)
+  
+  ## stats
+  temp_data_gene$logitMeth <- logitTransform(temp_data_gene$proportion)
+  
+  ## check if 'treatment' has at least two levels
+  if(length(unique(temp_data_gene$treatment)) >= 2) {
+   
+    ## perform the analysis
+   aov_results <- aov(logitMeth ~ treatment, data=temp_data_gene)
+   tukey_results <- summary(glht(aov_results, linfct=mcp(treatment="Tukey")), test=adjusted("BH"))
+   
+   temp_cld <- as.data.frame(cld(tukey_results)$mcletters$Letters, rownames=NULL) %>%
+    rownames_to_column(var="treatment") %>%
+    rename_with(~ ifelse(grepl("Letters", .x), "letters", .x))
+  } else {
+   ## create a placeholder data frame with NA values or a specific indicator
+   temp_cld <- data.frame(treatment=NA, letters=NA)
+   warning("Not enough treatment levels to perform ANOVA/Tukey. Filling with NAs.")
+  }
+  
+  temp_data_gene <- left_join(temp_data_gene, temp_cld, by=join_by(treatment)) %>%
+    ungroup(.) %>%
+    mutate(max_value = max(mean_methylation),
+           range = max(mean_methylation) - min(mean_methylation),
+           ylabelpos=max_value + (0.25 * range) + 0.1 * max_value) ## needs work
+  
+  temp_data_type <- rbind(temp_data_gene, temp_data_type)
+
+ }
+ 
+ all_types_meth_mean_stats <- rbind(temp_data_type, all_types_meth_mean_stats)
+}
+
+all_types_meth_mean_stats <- all_types_meth_mean_stats %>% 
+      mutate(treatment=factor(treatment, levels=c("Control", "LT", "FT", "HT")))
+```
+
+```{r fig.width=8, fig.height=11}
+bp <- ggplot(all_types_meth_mean_stats, 
+             aes(x=treatment, y=mean_methylation)) +
+ geom_boxplot(aes(fill=treatment)) +
+ geom_point()+
+ scale_fill_manual(values=mycolours)+
+ labs(x="Treatment", y=paste0("Methylation (%)")) +
+ theme_bw()+
+ geom_text(aes(x=treatment,
+               y=ifelse(ylabelpos > 10, ylabelpos, 11),
+               label=letters),
+           size=3)
+
+bp+facet_grid(cols=vars(type),
+            rows=vars(gene),
+            scales="free")
+```
+
+### Get expression data
+
+```{r}
+load("dataFiles/dds_l.rda")
+sample_codes <- read.csv("dataFiles/sample_codes.csv")
+```
+
+```{r warning=FALSE, message=FALSE}
+#GOI<-"MSTRG.11080" ## nr5a2
+#GOI<-"MSTRG.14175" ## cyp19a1a
+#GOI<-"MSTRG.25924" ## esr1
+#GOI<-"MSTRG.6587"  ## dmrt1
+#GOI<-"MSTRG.17481" ## foxl2
+#GOI<-"MSTRG.21481" ## GPR54
+#GOI<-"MSTRG.3352" ## sox8
+#GOI<-"MSTRG.3342" ## sox9
+#GOI<-"MSTRG.10723" ## amh
+
+mycolours <- c("#3B528BFF", "#21908CFF", "#8FD744FF", "#ED7953FF")
+GOIs <- c("MSTRG.11080", "MSTRG.14175", "MSTRG.25924", 
+          "MSTRG.6587", "MSTRG.17481", 
+          "MSTRG.21481", "MSTRG.3352", "MSTRG.3342",
+          "MSTRG.10723")
+names(GOIs) <- c("Nr5a2", "Cyp19a1a", "Esr1", 
+                 "Dmrt1", "Foxl2", 
+                 "GPR54", "sox8", "sox9",
+                 "Amh")
+
+express_mean_stats <- NULL
+
+for (GOI in GOIs) {
+  
+  GOI_name <- names(GOIs)[GOIs == GOI]
+
+  geneCounts <- plotCounts(dds_l, gene=GOI, intgroup=c("condition"), returnData=TRUE) %>%
+    mutate(RNAseq.ID=row.names(.)) %>%
+    rownames_to_column() %>%
+    mutate(rowname=gsub("24R", "LT", rowname),
+           rowname=gsub("28R", "Control", rowname),
+           rowname=gsub("34R", "HT", rowname),
+           rowname=gsub("FR", "FT", rowname),
+           logcount=log10(count)) %>%
+    column_to_rownames(var="rowname")
+  
+  glm_results <- glm.nb(count ~ condition, data=geneCounts)
+  tukey_results <- summary(glht(glm_results, linfct=mcp(condition="Tukey")), test=adjusted("BH"))
+  
+  temp_cld <- as.data.frame(cld(tukey_results)$mcletters$Letters, rownames=NULL) %>%
+    rownames_to_column(var="treatment") %>%
+    rename_with(~ ifelse(grepl("Letters", .x), "letters_e", .x))
+  
+  gene_counts <- geneCounts %>%
+    rownames_to_column(., var="sample_id") %>%
+    rename(treatment=condition) %>%
+    left_join(., temp_cld) %>%
+    mutate(max_value_e = max(logcount),
+           range_e = max(logcount) - min(logcount),
+           ylabelpos_e=max_value_e + (0.2 * range_e) + 0.05 * max_value_e, #max(logcount), 
+           gene=GOI_name)
+  
+  express_mean_stats <- rbind(express_mean_stats, gene_counts)
+  
+}
+
+express_mean_stats <- express_mean_stats %>% 
+      mutate(treatment=factor(treatment, levels=c("Control", "LT", "FT", "HT")))
+```
+
+### Correlations
+
+```{r}
+both_mean_stats <- express_mean_stats %>%
+  mutate(sample = gsub("R", "", RNAseq.ID), 
+         gene = tolower(gene)) %>%
+  left_join(sample_codes %>% dplyr::select(RNAseq.ID, WGBS.ID)) %>%
+  full_join(., (all_types_meth_mean_stats %>% 
+                  dplyr::rename(WGBS.ID = sample) %>%
+                  mutate(gene=tolower(gene)))) %>%
+  mutate(gene = factor(gene, levels=c("cyp19a1a", "esr1", "foxl2", 
+                                      "amh", "dmrt1", "gpr54", "nr5a2", "sox8", "sox9"))) %>%
+  mutate(association = ifelse(gene == "cyp19a1a" | gene == "esr1" | gene == "foxl2", 
+                              "ovary", 
+                              "testis"))
+```
+
+```{r fig.width=8, fig.height=11}
+cor <- ggplot(both_mean_stats %>% na.omit(.) %>% filter(type != "first_introns"), 
+              aes(mean_methylation, logcount))+
+  geom_point(aes(fill=treatment), 
+             shape=21,
+             size=2)+
+  xlab("Methylation (%)")+
+  ylab("Expression")+
+  scale_fill_manual(values = mycolours)+
+  geom_smooth(method=lm, se=FALSE, colour="black", lwd=0.5)+
+  theme_bw()+
+  guides(fill=guide_legend(title="Treatment"))+
+  stat_cor(method = "spearman",
+           label.x.npc = 0.1,
+           label.y.npc = 0.1,
+           size=2.5)+
+  theme(axis.title.x=element_text(size=10),
+        axis.title.y=element_text(size=10))+
+  facet_wrap(gene~type, ncol=3, scales="free", labeller = label_wrap_gen(multi_line=FALSE))
+
+cor
+```
+
+
+```{r}
+igenes_testis <- c("*dmrt1*", "*gpr54*", "*sox8*")
+igenes_ovary <- c("*cyp19a1a*", "*esr1*", "*foxl2*")
+
+genes_testis <- c("dmrt1", "gpr54", "sox8")
+genes_ovary <- c("cyp19a1a", "esr1", "foxl2")
+
+Types <- c("Promoter", "First exon", "Gene body")
+# genes <- c("cyp19a1a", "esr1", "foxl2", "dmrt1", "gpr54", "sox8")
+
+both_mean_stats_ovary <- both_mean_stats %>%
+  filter(gene %in% genes_ovary)  %>%
+  mutate(Type = ifelse(type == "promoter", "Promoter",
+                       ifelse(type == "first_exons", "First exon",
+                              ifelse(type == "gene_body", "Gene body",
+                                     "Other")))) %>%
+  # filter(Type %in% Types)  %>%
+  mutate(Type=factor(Type, levels=Types),
+         igene=paste0("*", gene, "*"),
+         gene=factor(gene, levels=genes_ovary),
+         igene=factor(igene, levels=igenes_ovary))
+
+both_mean_stats_testis <- both_mean_stats %>%
+  filter(gene %in% genes_testis)  %>%
+  mutate(Type = ifelse(type == "promoter", "Promoter",
+                       ifelse(type == "first_exons", "First exon",
+                              ifelse(type == "gene_body", "Gene body",
+                                     "Other")))) %>%
+  # filter(Type %in% Types)  %>%
+  mutate(Type=factor(Type, levels=Types),
+         igene=paste0("*", gene, "*"),
+         gene=factor(gene, levels=genes_testis),
+         igene=factor(igene, levels=igenes_testis))
+```
+
+
+```{r}
+expression_ovary <- ggplot(both_mean_stats_ovary %>%
+                             mutate(Type="Transcript (mRNA)"),
+                           aes(x=treatment, y=logcount)) + 
+  geom_boxplot(aes(fill=treatment), width=0.5,position = position_dodge(width=0.7)) +
+  geom_point(aes(fill=treatment), pch=21, position = position_dodge(width = 0.9))+
+  # facet_wrap(~igene, scales = "free", nrow=1)+
+  facet_wrap(~gene, scales = "free", nrow=1)+
+  labs(fill= "Treatment",x="Treatment",y="mRNA expression")+
+  theme_bw()+
+  geom_text(aes(x=treatment,
+                y=ylabelpos_e,
+                label=letters_e),
+            check_overlap = T,
+            size=3)+
+  theme(axis.title.x=element_text(size=10), 
+        axis.title.y=element_text(size=10))+
+  scale_fill_manual(values=mycolours, guide="none")+
+  theme(strip.background=element_blank(),
+        # strip.text.x=element_markdown(size=12))
+        strip.text.x=element_text(size=12, face = "italic"))
+
+expression_ovary
+```
+
+```{r}
+expression_testis <- ggplot(both_mean_stats_testis %>%
+                             mutate(Type="Transcript (mRNA)"),
+                           aes(x=treatment, y=logcount)) + 
+  geom_boxplot(aes(fill=treatment), width=0.5,position = position_dodge(width=0.7)) +
+  geom_point(aes(fill=treatment), pch=21, position = position_dodge(width = 0.9))+
+  # facet_wrap(~igene, scales = "free", nrow=1)+
+  facet_wrap(~gene, scales = "free", nrow=1)+
+  labs(fill= "Treatment",x="Treatment",y="mRNA expression")+
+  theme_bw()+
+  geom_text(aes(x=treatment,
+                y=ylabelpos_e,
+                label=letters_e),
+            check_overlap = T,
+            size=3)+
+  theme(axis.title.x=element_text(size=10), 
+        axis.title.y=element_text(size=10))+
+  scale_fill_manual(values=mycolours, guide="none")+
+  theme(strip.background=element_blank(),
+        # strip.text.x=element_markdown(size=12))
+        strip.text.x=element_text(size=12, face = "italic"))
+
+expression_testis
+```
+
+```{r}
+library(ggh4x)
+meth_ovary <- ggplot(both_mean_stats_ovary %>%
+                       filter(Type %in% Types),
+               aes(x=treatment, y=mean_methylation)) + 
+  scale_fill_manual(values=mycolours, guide="none")+
+  geom_boxplot(aes(fill=treatment), width=0.5, position = position_dodge(width=0.7)) +
+  geom_point(aes(fill=treatment), pch=21, position = position_dodge(width = 0.9))+
+  facet_grid2(Type~gene, scales = "free", independent="y")+
+  # facet_nested(Type~gene_assoc+gene, scales = "free", independent="y")+
+  labs(fill= "Treatment", x="Treatment", y="DNA methylation (%)")+
+  theme_bw()+
+  theme(axis.title.x=element_text(size=10),
+        axis.title.y=element_text(size=11),
+        # strip.text.x=element_markdown(),
+        strip.background=element_blank())
+
+meth_ovary
+
+meth_testis <- ggplot(both_mean_stats_testis %>%
+                       filter(Type %in% Types),
+               aes(x=treatment, y=mean_methylation)) + 
+  scale_fill_manual(values=mycolours, guide="none")+
+  geom_boxplot(aes(fill=treatment), width=0.5, position = position_dodge(width=0.7)) +
+  geom_point(aes(fill=treatment), pch=21, position = position_dodge(width = 0.9))+
+  facet_grid2(Type~gene, scales = "free", independent="y")+
+  # facet_nested(Type~gene_assoc+gene, scales = "free", independent="y")+
+  labs(fill= "Treatment", x="Treatment", y="DNA methylation (%)")+
+  theme_bw()+
+  theme(axis.title.x=element_text(size=10),
+        axis.title.y=element_text(size=10),
+        strip.text.y=element_text(size=11),
+        # strip.text.x=element_markdown(),
+        strip.background=element_blank())
+
+meth_testis
+```
+
+```{r}
+print(levels(factor(both_mean_stats_ovary$treatment)))
+mycolours
+
+legend_plot <- ggplot(both_mean_stats_ovary,
+                      aes(x=mean_methylation, y=logcount, fill=treatment))+
+  geom_point(shape=21, size=3)+
+  scale_fill_manual(values = mycolours, name="Treatment")+
+  theme(legend.position = "bottom")
+
+# legend_plot
+
+legend <- ggpubr::get_legend(legend_plot)
+
+legend
+```
+
+
+```{r}
+corr_ovary <- ggplot(both_mean_stats_ovary %>% 
+                  na.omit(.),
+                aes(x=mean_methylation, y=logcount)) +
+  geom_point(aes(fill=treatment), 
+             shape=21,
+             size=2)+
+  xlab("DNA methylation (%)")+
+  ylab("mRNA expression (log10Counts)")+
+  scale_fill_manual(values = mycolours, guide="none")+
+  geom_smooth(method=lm, se=FALSE, colour="black", lwd=0.5)+
+  theme_bw()+
+  stat_cor(method = "spearman",
+           label.x.npc = 0.05,
+           label.y.npc = 0.1,
+           size=2.5)+
+  theme(axis.title.x=element_text(size=10),
+        axis.title.y=element_text(size=10))+
+  facet_grid2(Type~gene, scales = "free", independent="all")+
+  theme(strip.background=element_blank(),
+        # strip.text.x=element_markdown(size=12))
+        strip.text.x=element_text(size=12, face = "italic"))
+
+corr_ovary
+
+corr_testis <- ggplot(both_mean_stats_testis %>% 
+                  na.omit(.),
+                aes(x=mean_methylation, y=logcount)) +
+  geom_point(aes(fill=treatment), 
+             shape=21,
+             size=2)+
+  xlab("DNA methylation (%)")+
+  ylab("mRNA expression (log10Counts)")+
+  scale_fill_manual(values = mycolours, guide="none")+
+  geom_smooth(method=lm, se=FALSE, colour="black", lwd=0.5)+
+  theme_bw()+
+  stat_cor(method = "spearman",
+           label.x.npc = 0.05,
+           label.y.npc = 0.1,
+           size=2.5)+
+  theme(axis.title.x=element_text(size=10),
+        axis.title.y=element_text(size=10))+
+  facet_grid2(Type~gene, scales = "free", independent="all")+
+  theme(strip.background=element_blank(),
+        strip.text.y=element_text(size=11),
+        # strip.text.x=element_markdown(size=12))
+        strip.text.x=element_text(size=12, face = "italic"))
+
+corr_testis
+```
+```{r}
+library(scales)
+```
+
+```{r}
+ovaryp <- ggarrange(ggarrange(NULL,
+                              expression_ovary+
+                                scale_y_continuous(labels = label_number(scale = 1, accuracy = 0.1))+
+                                theme(axis.title.x=element_blank(),
+                                      plot.title = element_text(hjust=0.5,
+                                                                face="bold"))+
+                                ggtitle("Ovary-associated genes"), 
+                              NULL,
+                              nrow=1,
+                              widths=c(0.001,1,0)),
+                    meth_ovary+
+                      theme(strip.text.x=element_blank(), 
+                            strip.text.y=element_blank()), 
+                    corr_ovary+
+                      scale_y_continuous(labels = label_number(scale = 1, accuracy = 0.1))+
+                      theme(strip.text.y=element_blank()), 
+                    nrow=3, 
+                    heights=c(0.85,1.75,2), 
+                    labels=c("A", "B", "C"))
+
+ovaryp
+```
+
+```{r}
+testisp <- ggarrange(annotate_figure(ggarrange(NULL,
+                                               annotate_figure(expression_testis+
+                                                                 scale_y_continuous(
+                                                                   labels=label_number(scale = 1, 
+                                                                                       accuracy = 0.1))+
+                                                                 theme(axis.title.x=element_blank(),
+                                                                       axis.title.y=element_blank(),
+                                                                       plot.title = element_text(hjust=0.5,
+                                                                                                 face="bold"))+
+                                                                 ggtitle("Testis-associated genes"), 
+                                                               right=text_grob("Whole transcript", 
+                                                                               size=11, rot=270, 
+                                                                               vjust=1, hjust=0.25)), 
+                                               NULL,
+                                               nrow=1,
+                                               widths=c(0.0005,1,0.005)),
+                                     right=text_grob("Expression", size=12, rot=270, face = "bold", 
+                                                     vjust=1, hjust=0.25)),
+                     annotate_figure(meth_testis+
+                       theme(strip.text.x=element_blank(),
+                             axis.title.y=element_blank()),
+                                     right=text_grob("Methylation", size=12, rot=270, face = "bold", 
+                                                     vjust=1, hjust=0.75)),
+                     annotate_figure(corr_testis+
+                       scale_y_continuous(labels = label_number(scale = 1, accuracy = 0.1)),
+                       right=text_grob("Correlation", size=12, rot=270, face = "bold", 
+                                       vjust=1, hjust=0.75)),
+                    nrow=3, 
+                    heights=c(0.85,1.75,2))
+
+testisp
+```
+
+
+```{r fig.width=11, fig.height=12}
+# p <- annotate_figure(ggarrange(ovaryp, testisp, ncol=2),
+#                      between=text_grob("|", color = "black", face = "bold", size = 20))
+
+line <- "________________________________________________________________________________________________________________________________________________________________________"
+
+p <- ggarrange(ggarrange(annotate_figure(ovaryp, 
+                               right=text_grob(line,
+                                               size=9,
+                                               rot=90)), 
+               testisp,
+               ncol=2),
+               legend,#+theme(legend.margin = margin(t = 1, r = 1, b = 1, l = 1, unit = "pt")), 
+               nrow=2,
+               heights=c(1, 0.025))
+
+p
+```
+
+```{r}
+ggsave("figuresTables/Figure [meth_express2].png", width=11, height=12, units="in")
+ggsave("figuresTables/Figure [meth_express2].pdf", width=11, height=12, units="in")
+```
+

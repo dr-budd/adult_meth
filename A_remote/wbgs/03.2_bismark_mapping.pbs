@@ -1,0 +1,67 @@
+#!/bin/bash
+
+## specify job checkpoint interval (-c) but only when the server executing the job is shutdown (s).
+#PBS -c s
+## merge standard output and standard error streams into the named file.
+#PBS -j oe
+## send mail at batch job abort/exit to the email address provided.
+#PBS -m ae
+## advise the scheduler how many nodes/chunks, processors/cpu cores (zodiac = max 40) and how much memory
+#PBS -l select=1:ncpus=40:mem=128gb
+## advise the scheduler that this job will have completed within HH:MM:SS.
+#PBS -l walltime=99:00:00
+
+###
+# Organisation: QFAB; Edits: JCU
+#
+# Author: Mike; Edits: Alyssa
+###
+
+## This script runs bismark to map clean reads against reference genome
+
+##  specify where to find module load command
+shopt -s expand_aliases
+source /etc/profile.d/modules.sh
+
+## load bowtie2, samtools, and bismark
+module load bowtie2/2.4.4
+module load samtools/1.13
+module load bismark/0.23.1
+module list
+
+## navigate to directory containing this script, then back to the trimming file
+cd $PBS_O_WORKDIR/../analysis/trimming
+
+## NOTE: In order for bismark work properly the current working directory must contain the sequence files to be analysed.
+
+## print some helpful information
+echo "Job identifier is $PBS_JOBID"
+echo "Working directory is $PWD"
+
+## specify directories as variables
+
+inputdir=$PWD
+
+outputdir=$PWD/../mapping
+
+extractordir=$PWD/../extractor
+
+refdir=$PWD/../../genome
+
+sample=(24D1 24D2 24D3 28D1 28D2 28D3 34D1 34D2 34D5 FD1 FD2 FD3)
+
+ext1=_R1.merged_val_1.fq.gz
+ext2=_R2.merged_val_2.fq.gz
+
+## run bismark alignment
+
+# bismark [options] <genome_folder> {-1 <mates1> -2 <mates2> | <singles>}
+
+for f in "${sample[@]}"
+do
+    bismark -N 1 -L 20 --output_dir ${outputdir} --multicore 8 -p 4 --bowtie2  ${refdir}  -1 ${inputdir}/${f}${ext1} -2 ${inputdir}/${f}${ext2}
+done
+
+## NB: bismark will use more cores that specified by --multicore. See bismark --help for more info.
+
+## end script

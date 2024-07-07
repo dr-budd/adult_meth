@@ -1,0 +1,57 @@
+#!/bin/bash
+
+## specify job checkpoint interval (-c) but only when the server executing the job is shutdown (s).
+#PBS -c s
+## merge standard output and standard error streams into the named file.
+#PBS -j oe
+## send mail at batch job abort/exit to the email address provided.
+#PBS -m ae
+## advise the scheduler how many nodes/chunks, processors/cpus and how much memory
+#PBS -l select=1:ncpus=20:mem=64gb
+## advise the scheduler that this job will have completed within HH:MM:SS.
+#PBS -l walltime=99:00:00
+
+###
+# Organisation: QFAB; Edits: JCU
+#
+# Author: Mike; Edits: Alyssa
+###
+
+## This script is used to remove low quality bases and reads using trimgalore.
+
+##  specify where to find module load command
+shopt -s expand_aliases
+source /etc/profile.d/modules.sh
+
+##  load python, fastqc and trimgalore 
+module load python3/3.6.5
+module load fastqc/0.11.7
+module load trim-galore/0.6.7
+module load pigz/2.6
+module list 
+
+## navigate to directory containing this script
+cd $PBS_O_WORKDIR
+
+## print some helpful information
+echo "Job identifier is $PBS_JOBID"
+echo "Working directory is $PBS_O_WORKDIR"
+
+## add output directory as a variable
+outputdir=$PWD/../analysis/trimming/
+
+## same for data directory
+datadir=$PWD/../rawdata/
+
+sample=(24D1 24D2 24D3 28D1 28D2 28D3 34D1 34D2 34D5 FD1 FD2 FD3)
+
+ext1=_R1.merged.fastq.gz
+ext2=_R2.merged.fastq.gz
+
+for f in "${sample[@]}"
+do
+   echo "running trimgalore for sample: "${f}
+   trim_galore --trim-n  --cores 4 -o ${outputdir} --paired ${datadir}${f}${ext1} ${datadir}${f}${ext2}
+done
+
+## end script

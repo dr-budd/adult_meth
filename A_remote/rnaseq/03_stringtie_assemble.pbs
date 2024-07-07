@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# specify job checkpoint interval (-c) but only when the server executing the job is shutdown (s).
+#PBS -c s
+# merge standard output and standard error streams into the named file.
+#PBS -j oe
+# set the name of the job
+#PBS -N StringTieAssembly
+# send mail at batch job abort/exit to the email address provided.
+#PBS -m ae
+# advise the scheduler about the amount of physical memory required.
+#PBS -l pmem=120gb
+# Advise the scheduler that the job requires # cpu (ppn) from # node.
+#PBS -l nodes=1:ppn=40
+#Advise the scheduler that this job will have completed within 99 hours.
+#PBS -l walltime=99:00:00
+
+#where to find module load command
+source /etc/profile.d/modules.sh
+
+#load stringtie
+module load /sw/modules/stringtie/2.0.4
+
+for file in /rdsi/vol08/homes/jc303676/AGRF_RNASEQ_AGRFBOTH/*.bam; do
+        inname=$file
+        outname=$(echo $file | sed 's|.bam|_STRG.gtf|')
+        label=$(echo $file | sed 's|.bam|_STRG|')
+
+        stringtie $inname -p 10 -G /rdsi/vol08/homes/jc303676/AGRF_RNASEQ_AGRFBOTH/TemasekBarraGenome_Annotation.gtf -o $outname -l $label -v
+        #IndexedBarraGenome needs to be in working dir
+
+done

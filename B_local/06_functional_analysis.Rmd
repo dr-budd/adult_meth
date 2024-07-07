@@ -1,0 +1,489 @@
+---
+title: "Functional analysis"
+output:
+  html_notebook:
+    code_folding: hide
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+For species with no (or very poor/out of date) functional annotations and no straight forward way to link IDs (e.g., MSTRG_1234) with GO terms or other functional information then functional annotation is required. Here is one way to go about it:
+
+**Step 1.** Build a fish subset of the NCBI non-redundant protein (nr) database (following https://www.biostars.org/p/6528/)
+
+**1.1** Download the entire nr database from NCBI
+
+`## make directory`
+
+`mkdir  ncbiNrDb`
+`cd  ncbiNrDb`
+
+`## download files (takes days)`
+
+`BASE_URL="ftp://ftp.ncbi.nlm.nih.gov/blast/db/"`
+`wget -r -l1 -H -t1 -nd -N -np -A 'nr.*.tar.gz,nr.*.tar.gz.md5' --waitretry=10 --tries=inf "${BASE_URL}"`
+
+[compare checksums using tar.gz.md5 files]
+
+`## unzip files`
+
+`cat nr.*.tar.gz | tar -zxvi -f - -C .`
+
+**1.2** Subset it for fish:  
+
+  **1.2.1.** Download the prebuilt protein database from entrez:  
+  
+  a) Go to https://www.ncbi.nlm.nih.gov/protein and search for fish using `txid7898[ORGN]`   
+  b) Select **Send to File** and choose format **Accession**.   
+           
+  **1.2.2.** Use the list of fish accession from the previous step build an aliased blastdb of just fish:
+  
+  `## working IN your nr database directory (from step 1):`
+  
+  `blastdb_aliastool -seqidlist $PWD/sequence_txid7898.seq -db $PWD/nr -out $PWD/nr_Actinopterygii`. 
+    
+**Step 2.** Annotation - use blastx to find out which proteins your DEG and DMG sequences might encode:
+
+Blastx will:        
+a. Translate the barra nucleotide sequences (query) into all possible reading frames (6 per seq)    
+b. Compare them to your fish protein sequence database (db)       
+c. Identify homologous sequences between the db and query       
+d. Score the matches and report alignments        
+
+For DEGs: 
+
+`blastx -query DESeq2_DEGenes_RF_ctrl_ht.fa -db nr_Actinopterygii out barra_dge_4omicsbox.xml -num_threads 38 -evalue 1e-5 -word_size 3 -num_alignments 20 -outfmt 16 -max_hsps 20`
+
+for DMGs:
+
+`blastx -query ../Methylkit_DMGs_ctrl_ht_closest_gff3_genes_sequences.fasta -db nr_Actinopterygii -out 05_barra_dmc_4omicsbox.xml -num_threads 38 -evalue 1e-5 -word_size 3 -num_alignments 20 -outfmt 16 -max_hsps 20`
+
+**Step 3.** Load your blast results into OmicsBox and follow gene ontology annotation workflow.
+
+a. Go to Functional Analysis
+b. Load blast results (XML)
+c. Load sequences (fasta file; add to existing project)
+d. Run BLAST mapping and annotation
+e. Run interpro scan using cloud IPC
+f. Mergo GOs
+g. Generate charts (export results as txt for customisation in R)
+
+
+```{r setup, warning=FALSE, message=FALSE}
+current_directory <- dirname(rstudioapi::getActiveDocumentContext()$path)
+knitr::opts_knit$set(root.dir=normalizePath(paste0(current_directory)))
+
+# list.files("dataFiles/omicsBoxExports")
+```
+
+```{r warning=FALSE, message=FALSE}
+## load libraries
+library(ggpubr)
+library(tidyverse)
+```
+
+```{r}
+# ## colours
+# bp <- "#71bb80"
+# mf <- "#748fb8"
+# cc <- "#eccf61"
+# rct <- "#fb726c"
+# # ec <- "#6aa9a1"
+# ec <- "#9b85c2"
+
+## colours
+bp <- "#20bb70ff"
+mf <- "#648fb9ff"
+cc <- "#eccf31ff"
+rct <- "#fb626cff"
+# ec <- "#6aa9a1ff"
+ec <- "#9b65c9ff"
+
+clrs <- c(bp, cc, mf)
+```
+
+
+## Import and format data
+
+```{r}
+list.files("dataFiles/omicsBoxExports/")
+```
+```{r}
+fc_toupper <- function(s) {
+  # Extract the first character, convert it to uppercase, and concatenate with the rest of the string
+  paste0(toupper(substr(s, 1, 1)), substr(s, 2, nchar(s)))
+}
+```
+
+```{r}
+## DMG - import and format data ----
+
+## import
+dmc_reactome <- read.table("dataFiles/omicsBoxExports/reactome_categories_[05_barra_dmc_4omicsbox]_20240327_144551.txt", 
+                           col.names=c("type", "react_cat", "num_pathways"),
+                           sep="\t", header=TRUE)
+
+dmc_enzyme_codes <- read.table("dataFiles/omicsBoxExports/enzyme_code_distribution_[05_barra_dmc_4omicsbox]_20240327_144515.txt", 
+                               sep="\t", header=TRUE, 
+                               col.names=c("ec_classes", "num_seqs"))
+
+dmc_go_by_level <- read.table(
+ "dataFiles/omicsBoxExports/go_distribution_by_level_(2)_[05_barra_dmc_4omicsbox]_top_20_20240327_144505.txt", 
+ header = TRUE, sep = "\t", fill=TRUE, skip=1, 
+ col.names=c("go_id", "go_term", "num_seqs", "seqs")) ## ignore col.names warning
+
+dmc_go_bp <- read.table("dataFiles/omicsBoxExports/direct_go_count_(bp)_[05_barra_dmc_4omicsbox]_20240327_143801.txt", 
+                        header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, row.names = NULL, 
+                        col.names = c("go_term", "num_seqs", "seqs")) %>% 
+ mutate(type = "Biological process") ## ignore col.names warning
+
+dmc_go_cc <- read.table("dataFiles/omicsBoxExports/direct_go_count_(cc)_[05_barra_dmc_4omicsbox]_20240327_143828.txt", 
+                        header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, row.names = NULL, 
+                        col.names = c("go_term", "num_seqs", "seqs")) %>% 
+ mutate(type = "Cellular component")
+
+dmc_go_mf <- read.table("dataFiles/omicsBoxExports/direct_go_count_(mf)_[05_barra_dmc_4omicsbox]_20240327_143420.txt", 
+                        header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, row.names = NULL, 
+                        col.names = c("go_term", "num_seqs", "seqs")) %>% 
+ mutate(type = "Molecular function") ## ignore col.names warning
+
+## format data
+
+## manual edit
+dmc_go_by_level$type <- c(rep("Biological\nprocess", 12),
+                          "dummy", 
+                          rep("Molecular\nfunction", 10),
+                          "dummy",
+                          rep("Cellular\ncomponent", 2))
+
+dmc_go_by_level <- filter(dmc_go_by_level, type!="dummy") %>%
+ mutate(go_term = fc_toupper(go_term))
+
+## combine data
+dmc_go <- rbind(dmc_go_bp, dmc_go_cc) %>%
+ rbind(., dmc_go_mf) %>%
+ mutate(go_term = fc_toupper(go_term))
+
+
+dmc_reactome <- dmc_reactome %>% filter(type != "Enriched")
+
+## reorder the levels of go_term based on num_seqs
+dmc_reactome$react_cat <- factor(dmc_reactome$react_cat, 
+                         levels = dmc_reactome$react_cat[order(dmc_reactome$num_pathways, decreasing = FALSE)])
+
+dmc_go$go_term <- factor(dmc_go$go_term, 
+                         levels = dmc_go$go_term[order(dmc_go$num_seqs, decreasing = FALSE)])
+
+dmc_go_by_level$go_term <- factor(dmc_go_by_level$go_term, 
+                                  levels = dmc_go_by_level$go_term[order(dmc_go_by_level$num_seqs, decreasing = FALSE)])
+```
+
+```{r}
+## DEG - import and format data ----
+
+## import
+dge_reactome <- read.table("dataFiles/omicsBoxExports/reactome_categories_[05_barra_dge_4omicsbox]_20240327_163700.txt", 
+                           col.names=c("type", "react_cat", "num_pathways"),
+                           sep="\t", header=TRUE)
+
+dge_enzyme_codes <- read.table("dataFiles/omicsBoxExports/enzyme_code_distribution_[05_barra_dge_4omicsbox]_20240327_161446.txt", 
+                               sep="\t", header=TRUE, 
+                               col.names=c("ec_classes", "num_seqs"))
+
+dge_go_by_level <- read.table(
+ "dataFiles/omicsBoxExports/go_distribution_by_level_(2)_[05_barra_dge_4omicsbox]_top_20_20240327_161318.txt", 
+ header = TRUE, sep = "\t", fill=TRUE, skip=1, 
+ col.names=c("go_id", "go_term", "num_seqs", "seqs"))
+
+dge_go_bp <- read.table("dataFiles/omicsBoxExports/direct_go_count_(bp)_[05_barra_dge_4omicsbox]_20240327_161406.txt", 
+                        header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, row.names = NULL, 
+                        col.names = c("go_term", "num_seqs", "seqs")) %>% 
+ mutate(type = "Biological process")
+
+dge_go_cc <- read.table("dataFiles/omicsBoxExports/direct_go_count_(cc)_[05_barra_dge_4omicsbox]_20240327_161420.txt", 
+                        header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, row.names = NULL, 
+                        col.names = c("go_term", "num_seqs", "seqs")) %>% 
+ mutate(type = "Cellular component")
+
+dge_go_mf <- read.table("dataFiles/omicsBoxExports/direct_go_count_(mf)_[05_barra_dge_4omicsbox]_20240327_161349.txt", 
+                        header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE, row.names = NULL, 
+                        col.names = c("go_term", "num_seqs", "seqs")) %>% 
+ mutate(type = "Molecular function")
+
+## format data
+
+## manual edit
+dge_go_by_level$type <- c(rep("Biological\nprocess", 20),
+                          "dummy", 
+                          rep("Molecular\nfunction", 20),
+                          "dummy",
+                          rep("Cellular\ncomponent", 2))
+
+dge_go_by_level <- filter(dge_go_by_level, type!="dummy") %>%
+ mutate(go_term = fc_toupper(go_term))
+
+## combine data
+dge_go <- rbind(dge_go_bp, dge_go_cc) %>%
+ rbind(., dge_go_mf) %>%
+ mutate(go_term = fc_toupper(go_term))
+
+## reorder the levels of go_term based on num_seqs
+dge_reactome <- dge_reactome %>% filter(type != "Enriched") 
+
+dge_reactome$react_cat <- factor(dge_reactome$react_cat, 
+                         levels = dge_reactome$react_cat[order(dge_reactome$num_pathways, decreasing = FALSE)])
+
+dge_go$go_term <- factor(dge_go$go_term, 
+                         levels = dge_go$go_term[order(dge_go$num_seqs, decreasing = FALSE)])
+
+dge_go_by_level$go_term <- factor(dge_go_by_level$go_term, 
+                                  levels = dge_go_by_level$go_term[order(dge_go_by_level$num_seqs, decreasing = FALSE)])
+```
+
+## Enzyme codes
+
+```{r}
+both_enzyme_codes <- full_join(dge_enzyme_codes %>% mutate(data = "DEG"),
+                     dmc_enzyme_codes %>% mutate(data = "DMG"))
+
+both_enzyme_codes_plot <- ggplot(both_enzyme_codes, aes(x = ec_classes, y = num_seqs)) +
+ geom_bar(stat = "identity", fill="#9b65c9ff") +
+ labs(x = "Enzyme class",
+      y = "Number of sequences") +
+ facet_grid(.~data, scales="free")+
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none")
+
+both_enzyme_codes_plot 
+```
+
+```{r}
+shared_enzyme_codes <- both_enzyme_codes %>%
+  group_by(ec_classes) %>%
+  filter(all(c("DEG", "DMG") %in% data))
+ 
+shared_enzyme_codes$ec_classes <- factor(shared_enzyme_codes$ec_classes, 
+                         levels = dge_enzyme_codes$ec_classes[order(dge_enzyme_codes$num_seqs, decreasing = FALSE)])
+
+shared_enzyme_codes_plot <- ggplot(shared_enzyme_codes, aes(x = ec_classes, y = num_seqs)) +
+ geom_bar(stat = "identity", fill="#9b65c9ff") +
+ labs(x = "Enzyme class",
+      y = "Number of sequences") +
+ facet_grid(.~data, scales="free")+
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none")
+
+shared_enzyme_codes_plot 
+```
+
+## Reactome categories
+
+```{r fig.height=7, fig.width=8}
+dmc <- ggplot(dmc_reactome, aes(x = react_cat, y = num_pathways)) +
+ geom_bar(stat = "identity", fill="#fb626cff") +
+ labs(x = "Reactome category",
+      y = "Number of pathways") +
+ theme(axis.text.x = element_text(angle = 45, hjust = 1))+  # Rotate x-axis labels for better readability
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none")
+
+dge <- ggplot(dge_reactome, aes(x = react_cat, y = num_pathways)) +
+ geom_bar(stat = "identity", fill="#fb626cff") +
+ labs(x = "Reactome category",
+      y = "Number of pathways") +
+ theme(axis.text.x = element_text(angle = 45, hjust = 1))+  # Rotate x-axis labels for better readability
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none")
+
+ggarrange(dmc+ggtitle("DMG"), dge+ggtitle("DEG"), ncol=1)
+```
+
+```{r fig.height=5, fig.width=8}
+both_reactome <- full_join(dge_reactome %>% mutate(data = "DEG"),
+                     dmc_reactome %>% mutate(data = "DMG"))
+
+both <- ggplot(both_reactome, aes(x = react_cat, y = num_pathways)) +
+ geom_bar(stat = "identity", fill="#fb626cff") +
+ labs(x = "Reactome category",
+      y = "Number of pathways") +
+ facet_grid(type~data, scales="free")+
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none")
+
+both
+```
+```{r}
+print("shared Reactome categories")
+intersect(dge_reactome$react_cat, dmc_reactome$react_cat)
+```
+
+```{r fig.height=3, fig.width=8}
+shared_reactome <- both_reactome %>%
+  group_by(react_cat) %>%
+  filter(all(c("DEG", "DMG") %in% data)) 
+
+shared_reactome$react_cat <- factor(shared_reactome$react_cat, 
+                         levels = dge_reactome$react_cat[order(dge_reactome$num_pathways, decreasing = FALSE)])
+
+shared_reactome_plot <- ggplot(shared_reactome, aes(x = react_cat, y = num_pathways)) +
+ geom_bar(stat = "identity", fill="#fb626cff") +
+ labs(x = "Reactome category",
+      y = "Number of pathways") +
+ facet_grid(.~data, scales="free")+
+ # facet_grid(data~., scales="free")+
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none")
+
+shared_reactome_plot
+```
+
+## Gene ontology (GO) terms
+
+```{r fig.height=11, fig.width=6}
+dmc_go <- dmc_go %>% 
+ ## add line break to nth space
+ mutate(go_term_label = sub(
+  "^(\\S+\\s+\\S+\\s+\\S+\\s+\\S+\\s+\\S+)\\s+(.*)$", ## every 5th
+  # "^(\\S+\\s+\\S+\\s+\\S+)\\s+(.*)$", ## every third
+  "\\1\n\\2", go_term))
+
+dge_go <- dge_go %>% 
+ ## add line break to nth space
+ mutate(go_term_label = sub(
+  "^(\\S+\\s+\\S+\\s+\\S+\\s+\\S+\\s+\\S+)\\s+(.*)$", ## every 5th
+  # "^(\\S+\\s+\\S+\\s+\\S+)\\s+(.*)$", ## every third
+  "\\1\n\\2", go_term))
+```
+
+```{r fig.height=11}
+dmc <- ggplot(dmc_go, aes(x = go_term_label, y = num_seqs, fill=type)) +
+ geom_bar(stat = "identity") +
+ # scale_fill_manual(values=clrs)+
+ scale_fill_manual(values=clrs)+
+ labs(x = "GO term",
+      y = "Number of sequences") +
+ facet_grid(type~., scales="free", space="free", labeller = label_wrap_gen(width=10))+
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none", 
+       axis.text.y = element_text(size=3))+
+  ggtitle("DMG")
+
+dge <- ggplot(dge_go, aes(x = go_term_label, y = num_seqs, fill=type)) +
+ geom_bar(stat = "identity") +
+ scale_fill_manual(values=clrs)+
+ labs(x = "GO term",
+      y = "Number of sequences") +
+ facet_grid(type~., scales="free", space="free")+
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none", 
+       axis.text.y = element_text(size=5))+
+  ggtitle("DMG")
+
+dmc
+dge
+```
+
+```{r fig.height=11, fig.width=8}
+dmc <- ggplot(dmc_go %>% filter(num_seqs > 1), 
+       aes(x = go_term_label, y = num_seqs, fill=type)) +
+ geom_bar(stat = "identity") +
+ scale_fill_manual(values=clrs)+
+ labs(x = "GO term",
+      y = "Number of sequences") +
+ theme(axis.text.x = element_text(size=1))+
+ facet_grid(type~., scales="free", space="free", labeller = label_wrap_gen(width=10))+
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none")
+
+dge <- ggplot(dge_go %>% filter(num_seqs > 100), 
+       aes(x = go_term_label, y = num_seqs, fill=type)) +
+ geom_bar(stat = "identity") +
+ scale_fill_manual(values=clrs)+
+ labs(x = "GO term",
+      y = "Number of sequences") +
+ theme(axis.text.y = element_text(size=1))+
+ facet_grid(type~., scales="free", space="free", labeller = label_wrap_gen(width=10))+
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none")
+
+ggarrange(dmc+ggtitle("DMG"), dge+ggtitle("DEG"), 
+          ncol=1, 
+          heights = c(0.5, 1))
+```
+
+```{r}
+print("Shared GO terms")
+intersect(dge_go$go_term, dmc_go$go_term)
+```
+
+```{r fig.height=5, fig.width=8}
+both_go <- full_join(dge_go %>% filter(num_seqs > 100) %>% mutate(data = "DEG"),
+                     dmc_go %>% filter(num_seqs > 1) %>% mutate(data = "DMG"))
+
+both <- ggplot(both_go, 
+       aes(x = go_term_label, y = num_seqs, fill=type)) +
+ geom_bar(stat = "identity") +
+ scale_fill_manual(values=clrs)+
+ labs(x = "GO term",
+      y = "Number of sequences") +
+ facet_grid(type~data, scales="free", labeller = label_wrap_gen(width=10))+
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none",
+       axis.text.y = element_text(size=6))
+
+both
+```
+
+```{r fig.height=4, fig.width=8}
+shared_go <- both_go %>%
+  group_by(go_term) %>%
+  filter(all(c("DEG", "DMG") %in% data))
+
+shared_go$go_term_label <- factor(shared_go$go_term_label, 
+                         levels = dge_go$go_term_label[order(dge_go$num_seqs, decreasing = FALSE)])
+
+shared_go_plot <- ggplot(shared_go, 
+       aes(x = go_term_label, y = num_seqs, fill=type)) +
+ geom_bar(stat = "identity") +
+ scale_fill_manual(values=clrs)+
+ labs(x = "GO term",
+      y = "Number of sequences") +
+ facet_grid(type~data, scales="free", space="free_y", labeller = label_wrap_gen(width=10))+
+ coord_flip()+
+ theme_bw()+
+ theme(legend.position = "none")
+
+shared_go_plot
+```
+## Combine plots
+
+```{r fig.width=9, fig.height=9}
+ggarrange(shared_go_plot+theme(strip.background = element_blank()), 
+          ggarrange(NULL, 
+                    shared_reactome_plot+theme(strip.background = element_blank()),
+                    NULL,
+                    nrow=1, widths=c(0.1, 1, 0.05)),
+          ggarrange(NULL, 
+                    shared_enzyme_codes_plot+theme(strip.background = element_blank()), 
+                    NULL,
+                    nrow=1, widths=c(0.2, 1, 0.05)),
+          heights=c(0.3, 0.3, 0.1),
+          labels=c("A", "B", "C"),
+          nrow=3)
+
+ggsave("figuresTables/Figure [functional_figure].png", height=9, width=9, units="in")
+ggsave("figuresTables/Figure [functional_figure].pdf", height=9, width=9, units="in")
+
+```

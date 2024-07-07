@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# specify job checkpoint interval (-c) but only when the server executing the job is shutdown (s).
+#PBS -c s
+# merge standard output and standard error streams into the named file.
+#PBS -j oe
+# set the name of the job
+#PBS -N StringTie_ETA
+# send mail at batch job abort/exit to the email address provided.
+#PBS -m ae
+# advise the scheduler about the amount of physical memory required.
+#PBS -l pmem=120gb
+# Advise the scheduler that the job requires # cpu (ppn) from # node.
+#PBS -l nodes=1:ppn=40
+#Advise the scheduler that this job will have completed within 99 hours.
+#PBS -l walltime=99:00:00
+
+#where to find module load command
+source /etc/profile.d/modules.sh
+
+#load string tie
+module load /sw/modules/stringtie/2.0.4
+
+for file in /rdsi/vol08/homes/jc303676/AGRF_RNASEQ_AGRFBOTH/*.bam; do
+        inname=$file
+        outname=$(echo $file | sed 's|.*BOTH/|STRG_|' | sed 's|.bam||') #(for ballgown)
+
+        #echo /rdsi/vol08/homes/jc303676/AGRF_RNASEQ_AGRFBOTH/$outname/$outname.gtf
+
+        stringtie -e -B -p 10 -G /rdsi/vol08/homes/jc303676/AGRF_RNASEQ_AGRFBOTH/stringtie_merged.gtf -o /rdsi/vol08/homes/jc303676/AGRF_RNASEQ_AGRFBOTH/$outname/$outname.gtf -v $inname
+
+done
+

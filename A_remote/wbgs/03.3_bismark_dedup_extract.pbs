@@ -1,0 +1,69 @@
+#!/bin/bash
+
+## specify job checkpoint interval (-c) but only when the server executing the job is shutdown (s).
+#PBS -c s
+## merge standard output and standard error streams into the named file.
+#PBS -j oe
+## send mail at batch job abort/exit to the email address provided.
+#PBS -m ae
+## advise the scheduler how many nodes/chunks, processors/cpu cores (zodiac = max 40) and how much memory
+#PBS -l select=1:ncpus=40:mem=128gb
+## advise the scheduler that this job will have completed within HH:MM:SS.
+#PBS -l walltime=99:00:00
+
+###
+# Organisation: QFAB; Edits: JCU
+#
+# Author: Mike; Edits: Alyssa
+###
+
+## This script has two steps that are carried our for each sample:
+## Step 1 deduplicates the bismark reads (recommended for WGBS samples)
+## Step 2 extracts the methylation information for individual cytosines
+## from the (now deduplicated) alignment files
+
+## *** Please note that for paired-end BAM files the
+## deduplication script expects Read1 and Read2 to
+## follow each other in consecutive lines! If the
+## file has been sorted by position make sure that you resort it
+## by read name first (e.g. using samtools sort -n)  ***
+
+##  specify where to find module load command
+shopt -s expand_aliases
+source /etc/profile.d/modules.sh
+
+## load bismark (all required?? **)
+module load bismark/0.24.0
+module list
+
+## navigate to directory containing this script
+cd $PBS_O_WORKDIR
+
+## print some helpful information
+echo "Job identifier is $PBS_JOBID"
+echo "Working directory is $PWD"
+
+## specify directories as variables
+inputdir=$PWD/../analysis/mapping
+
+outputdir=$PWD/../analysis/deduplication
+
+extractordir=$PWD/../analysis/extractor
+
+refdir=$PWD/../genome
+
+## sample list
+sample=(24D1 24D2 24D3 28D1 28D2 28D3 34D1 34D2 34D5 FD1 FD2 FD3)
+
+## file names/extensions
+bismark_ext=_R1.merged_val_1_bismark_bt2_pe.bam
+bismark_dedup_basename=_R1.merged_trimmed_bismark_bt2_pe
+bismark_dedup_ext=_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bam
+
+for f in "${sample[@]}"
+do
+    deduplicate_bismark --outfile ${f}${bismark_dedup_basename} --output_dir ${outputdir} ${inputdir}/${f}${bismark_ext}
+    bismark_methylation_extractor --output ${extractordir} --multicore 8 --buffer_size 50% --comprehensive --bedGraph --cytosine_report --genome_folder ${refdir} ${outputdir}/${f}${bismark_dedup_ext}
+done
+
+## end script

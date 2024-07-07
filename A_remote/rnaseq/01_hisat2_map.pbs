@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# specify job checkpoint interval (-c) but only when the server executing the job is shutdown (s).
+#PBS -c s
+# merge standard output and standard error streams into the named file.
+#PBS -j oe
+# set the name of the job
+#PBS -N Hisat2
+# send mail at batch job abort/exit to the email address provided.
+#PBS -m ae
+# advise the scheduler about the amount of physical memory required.
+#PBS -l pmem=120gb
+# Advise the scheduler that the job requires # cpu (ppn) from # node.
+#PBS -l nodes=1:ppn=40
+#Advise the scheduler that this job will have completed within 99 hours.
+#PBS -l walltime=99:00:00
+
+#where to find module load command
+source /etc/profile.d/modules.sh
+
+#load hisat2
+module load /sw/modules/hisat2/2.1.0
+
+for file in /rdsi/vol08/homes/jc303676/AGRF_RNASEQ_AGRFBOTH/*_R1.cor.fq.PwU.qtrim.fq; do
+
+        R1=$file
+        R2=${file/_R1/_R2}
+        R1m=$(echo $file | sed 's|_C.*||')
+
+        #echo $R1
+        #echo $R2
+        #echo $R1m
+
+        hisat2 -p 4 --dta -x /rdsi/vol08/homes/jc303676/AGRF_RNASEQ_AGRFBOTH/TemasekBarraGenome --rna-strandness RF -1 $R1 -2 $R2 -S $R1m.sam &>01_hisat2_map.log
+
+done
+
+### end script ###

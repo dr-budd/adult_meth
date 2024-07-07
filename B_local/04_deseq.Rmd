@@ -1,0 +1,686 @@
+---
+title: "DESeq2 analysis"
+output:
+  html_notebook:
+    code_folding: none
+---
+
+```{r setup}
+## set working directory
+current_directory <- dirname(rstudioapi::getActiveDocumentContext()$path)
+knitr::opts_knit$set(root.dir=normalizePath(paste0(current_directory)))
+```
+
+```{r warning=FALSE, message=FALSE}
+## SET UP ----
+
+## load libraries 
+library(BiocManager)
+library(tximport)
+library(DESeq2)
+library(vsn)
+library(sva)
+library(rtracklayer)
+library(pheatmap)
+library(RColorBrewer)
+library(data.table)
+library(ggpubr)
+library(hexbin)
+library(VennDiagram)
+library(gplots)
+library(dendextend)
+library(tidyverse)
+
+## small legend function
+addSmallLegend <- function(myPlot, pointSize = 0.8, textSize = 6, spaceLegend = 0.1) {
+  myPlot +
+    guides(shape = guide_legend(override.aes = list(size = pointSize)),
+           size = guide_legend(override.aes = list(size = pointSize)),
+           color = guide_legend(override.aes = list(size = pointSize))) +
+    theme(legend.title = element_text(size = textSize), 
+          legend.text  = element_text(size = textSize),
+          legend.key.size = unit(spaceLegend, "lines"))
+}
+```
+
+### Import RNA-seq data
+
+```{r}
+## IMPORT AND FORMAT SAMPLE TABLE ----
+
+## read in a table that contains the sample IDs
+sample_table <- read.table("dataFiles/sample_information_RNA.txt", header=TRUE) %>%
+  ## make seq run a factor 
+  mutate(seq.run = factor(seq.run), 
+         ## make stage ordered factor
+         stage = factor(stage, levels=c("M1", "M2", "M3", "T1", "T2", "F2")), 
+         ## make column for condition and fish no (used? **)
+         condition = treatment, 
+         FishNo = rep(1:5, 4),
+         ## rename treatments in condition column
+         condition = gsub("T2434", "FT", condition), 
+         condition = gsub("T34", "HT", condition), 
+         condition = gsub("T28", "Control", condition), 
+         condition = gsub("T24", "LT", condition), 
+         ## make ordered factor
+         condition = factor(condition, levels=c("Control","LT","FT","HT")), 
+         ## make control the base line for comparison
+         condition = relevel(condition, ref = "Control"), 
+         ## create column with labels
+         sample_label = paste(condition, 
+                              " (", stage, ")", sep="")) %>%
+  droplevels(.)
+
+## and make a vector with the names of each of the ballgown ctab files (copied from dropbox folder "DESeq2_2019_2/ballgown)
+files <- file.path("dataFiles/ballgownData", dir("dataFiles/ballgownData"), "t_data.ctab")
+
+## name the files the name of the samples
+names(files)<-sample_table$sample
+
+## check they were in the same order
+# files
+```
+
+### Create the DESeq Data Set (DDS)
+
+```{r}
+## CREATE DESeq Data Set (DDS) ----
+
+list.files("dataFiles")
+
+## import stringtie merged gtf so you can extract transcript and gene ids
+stringtie_merged_transcripts <- import("dataFiles/StringTieMerged_20191218.gtf") %>%
+  ## make it a data frame
+  as.data.frame(.) %>%
+  ## remove exon information (keep only transcripts)
+  dplyr::filter(type=="transcript")
+
+## make a data.frame called tx2gene with two columns:
+## 1) transcript ID and 2) gene ID.
+tx2gene <- data.frame(stringtie_merged_transcripts$transcript_id,
+                      stringtie_merged_transcripts$gene_id)
+
+## use tximport to compute counts from the stringtie coverage information
+txi<-tximport(
+  files=files,
+  type="stringtie",
+  tx2gene=tx2gene,
+)
+
+## check the sample_table and colnames of txi$counts are in the correct order
+sample_table$condition
+colnames(txi$counts)
+
+## rename the rownames for the sample table with the columns from txi$counts
+rownames(sample_table) <- colnames(txi$counts)
+
+## create a DESeqDataSet for use with DESeq2
+dds_l_txi <- DESeqDataSetFromTximport(txi,
+                                      sample_table,
+                                      design = ~ condition)
+```
+### Pre-filtering
+
+```{r}
+## apply the most minimal filtering rule: remove rows of the DESeqDataSet that have no counts, or only a single count across all samples. 
+
+paste0("pre-filtering row counts (unfiltered 1st)")
+nrow(dds_l_txi)
+keep <- rowSums(counts(dds_l_txi)) > 1
+dds_l_txi <- dds_l_txi[keep,]
+nrow(dds_l_txi)
+```
+
+```{r}
+# construct DESeq object (takes about 2 minutes - first time only) ----
+dds_l <- DESeq(dds_l_txi)
+
+# save it (first time only)
+save(dds_l, file="dataFiles/dds_l.rda")
+
+# colnames(dds_l)
+
+# rename the columns with your sample label (AFTER saving)
+colnames(dds_l)<-sample_table$sample_label
+```
+
+```{r}
+## load it (every other time) ----
+# load("dataFiles/dds_l.rda")
+
+# rename the columns with your sample label (AFTER saving)
+colnames(dds_l)<-sample_table$sample_label
+```
+
+### Examine batch effects
+
+```{r fig.width=5, fig.height=5}
+## obtain a matrix of normalized counts for which
+## the average count across samples is larger than 1.
+dat  <- counts(dds_l, normalized = TRUE)
+idx  <- rowMeans(dat) > 1
+dat  <- dat[idx, ]
+mod  <- model.matrix(~ condition, colData(dds_l))
+mod0 <- model.matrix(~   1, colData(dds_l))
+svseq <- svaseq(dat, mod, mod0, n.sv = 2)
+
+## create list of possible covariates
+possible_covariates<-c("tank", 
+                      "seq.run", 
+                      "lib.prep")
+```
+
+```{r fig.width=8, fig.height=10}
+
+# Create an empty list to store the plots
+plot_list <- list()
+
+# Loop over possible_covariates and i
+for (j in possible_covariates) {
+  for (i in 1:2) {
+    
+    temp_data <- cbind.data.frame(variable = dds_l[[j]], 
+                                  value = svseq$sv[, i], 
+                                  sample = dds_l$sample, 
+                                  stage = dds_l$stage,
+                                  treatment = dds_l$condition)
+    
+    temp_plot <- ggplot(temp_data, aes(label = sample, 
+                                       fill = treatment,
+                                       x = variable, 
+                                       y = value)) +
+      geom_point(pch = 22, size = 2.5) +
+      geom_hline(yintercept = 0, size = 0.5) +
+      geom_text(hjust = 1.5, size = 2) +
+      theme_bw(base_size = 15) +
+      labs(y = "estimate", 
+           title = paste0("SV ", i), 
+           x = j)+
+      guides(fill = guide_legend(title = "Treatment"))
+    
+    # print(temp_plot)
+    
+    # Append the plot to the plot_list
+    plot_list[[length(plot_list) + 1]] <- temp_plot
+  }
+}
+
+# Use ggarrange to arrange all the plots in the plot_list into a single figure
+combined_plot <- ggarrange(plotlist = plot_list, common.legend = TRUE, ncol=2, nrow=3)
+combined_plot
+
+## save the combined plot
+ggsave("figuresTables/Figure S[surrogate_var_anal].pdf",
+       combined_plot,
+       width = 8, height = 10, units = "in",
+       device = "pdf")
+```
+
+No batch effects observed
+
+### Data transformation and visualisation 
+
+```{r}
+## variance stabilizing transformation ----
+
+## apply variance stabilizing transformation to make the data homoskedastic (good for MDS, PCA, etc.)
+
+# A note on transformation:
+
+# Apply the VST to your count data for exploratory analysis and visualization purposes. Use the original count data (not the VST-transformed data) and apply LFC shrinkage to the results for performing differential expression analysis (because differential expression analysis in DESeq2 is designed to work with count data, and the LFC shrinkage methods are specifically tailored for such data)
+
+dds_l_vsd <- vst(dds_l, blind = FALSE) ## better for n>30
+```
+
+
+```{r fig.width=17.5, fig.height=13.506, warning=FALSE, message=FALSE}
+#### PCA's ----
+
+# PCAs - OPTIONS FOR no_genes etc
+pca_covariates <- c("length.class", "weight.g", "length.rank", "stage")
+no_genes <- rev(c(nrow(dds_l_vsd)*0.0001, 
+              nrow(dds_l_vsd)*0.001, 
+              nrow(dds_l_vsd)*0.01, 
+              nrow(dds_l_vsd)*0.1, 
+              nrow(dds_l_vsd)))
+
+# Create an empty list to store the plots
+plot_list <- list()
+
+for (j in no_genes) {
+  
+  pca_data <- plotPCA(dds_l_vsd, 
+                     intgroup = c("condition", "stage", "length.mm", "length.rank", "length.class", "weight.g"), 
+                     returnData = TRUE, ntop = j)
+  
+  percent_var <- round(100 * attr(pca_data, "percentVar"))
+  percent_var
+  
+  for (i in pca_covariates) {
+    g <- ggplot(pca_data, aes(x = PC1, 
+                              y = PC2, 
+                              group = condition,
+                              color = condition, 
+                              size = !!as.name(i))) +
+      geom_point() +
+      stat_ellipse(show.legend = F)+
+      xlab(paste0("PC1: ", percent_var[1], "% variance")) +
+      ylab(paste0("PC2: ", percent_var[2], "% variance")) +
+      coord_fixed() +
+      theme(plot.margin = unit(c(0.1, 0.1, 0.1, 0.1), "cm")) +
+      ggtitle(paste0("Covar: ", i, "; No. genes: ", j))
+    plot_list[[length(plot_list) + 1]] <- addSmallLegend(g)
+  }
+}
+
+# Use ggarrange to arrange all the plots in the plot_list into a single figure
+combined_plot <- ggarrange(plotlist = plot_list, ncol=4, nrow=5)
+combined_plot
+
+# ggsave("figuresTables/PCA1&2.pdf", 
+#        combined_plot,
+#        width = 8.75*2, height = 11.25*1.2, 
+#        units = "in")
+```
+
+Until you look at the top 3 or 30 DEGs that you start to see separation between treatments.
+
+## Differential expression analysis
+
+### Contrasts (Pairwise comparisons)
+
+```{r message=FALSE}
+## A contrast is a linear combination of estimated log2 fold changes, which can be used to test if differences between groups are equal to zero. The contrasts enable the user to generate results for all 3 possible differences: log2 fold change of B vs A, of C vs A, and of C vs B. 
+
+## Define conditions and all possible combinations
+conditions <- c("Control", "LT", "FT", "HT")
+combinations <- combn(conditions, 2)
+
+## Create a list to store the results data frames
+results_list_sigfc <- list()
+results_list_all <- list()
+
+## Loop through all combinations and run DESeq2 analysis
+for (i in 1:ncol(combinations)) {
+  ## get contrast name
+  contrast_name <- paste(combinations[, i], collapse = "_")
+  ## extract results table from DESeq2 analysis
+  res <- results(dds_l, 
+                 ## specifies what comparison to extract from the object to build a results table
+                 contrast = c("condition", combinations[1, i], combinations[2, i]), 
+                 ## adjust for multiple comparisons
+                 pAdjustMethod = "BH")
+  ## apply shrinkage
+  res <- lfcShrink(dds_l, contrast=c("condition", combinations[1, i], combinations[2, i]),
+                   res=res, type = 'normal')
+  ## order df
+  res_ordered_temp <- res[order(res$padj), ]
+  ## subset for p < 0.05
+  res_sig_temp <- subset(res_ordered_temp, padj < 0.05) # or 0.1?
+  ## subset for fold change > 1 or < -1
+  res_sig_fc1_temp <- subset(res_sig_temp, log2FoldChange < -1 | log2FoldChange > 1)
+  ## order by decreasing fold change
+  de_table_sigfc <- as.data.frame(res_sig_fc1_temp[order(res_sig_fc1_temp$log2FoldChange, decreasing=TRUE), ])
+  de_table <- as.data.frame(res[order(res$log2FoldChange, decreasing=TRUE), ])
+  ## make it a data dable
+  de_table_sigfc <- setDT(de_table_sigfc, keep.rownames = TRUE)[]
+  de_table <- setDT(de_table, keep.rownames = TRUE)[]
+  ## edit names
+  names(de_table_sigfc)[names(de_table_sigfc) == "rn"] <- "gene_id"
+  names(de_table)[names(de_table) == "rn"] <- "gene_id"
+  ## add column specifying comparison
+  de_table_sigfc$comparison <- contrast_name
+  de_table$comparison <- contrast_name
+  ## add to master list
+  results_list_sigfc[[contrast_name]] <- de_table_sigfc
+  results_list_all[[contrast_name]] <- de_table
+}
+
+## combine all the DESeq2 results into a single data frame
+all_degs_table <- do.call(rbind.data.frame, results_list_sigfc)
+```
+
+### Export results for functional analysis
+
+```{r}
+## Export genes for functional analysis ----
+
+## create list of columns to copy from the ballgown table
+columns_to_copy<-c("seqnames","start","end", "score", "strand", "transcript_id", "ref_gene_id")
+
+## DE table for control vs HT only 
+ctrl_ht_degs_table<-all_degs_table %>%
+  filter(comparison=="Control_HT")
+
+## this method keeps multiple transcripts per gene
+ctrl_ht_degs_table_x <- left_join(ctrl_ht_degs_table, 
+                                   (stringtie_merged_transcripts %>%
+                                     select(all_of(columns_to_copy), gene_id)))
+
+## get file into bed format
+ctrl_ht_degs_table_bed <- ctrl_ht_degs_table_x %>%
+  select(seqnames, start, end,
+         gene_id, score, strand) %>%
+  unique(.)
+
+## export
+write.table(ctrl_ht_degs_table_bed, "dataFiles/DESeq2_DEGenes_RF_ctrl_ht.bed", quote=FALSE, sep="\t", row.names=FALSE, col.names=FALSE)
+```
+
+Get nucleotide sequences or for the gene IDs.
+
+**Step 1.** Copy "DESeq2_DEGenes_RF_ctrl_ht.bed" (DEG) and "Methylkit_DMCs_ctrl_ht.bed" (DMG) files to the HPC
+
+**Step 2.** Use bedtools to get fasta sequences using the bed file and barra genome
+
+`module load bedtools2`
+`bedtools getfasta -fi $PWD/TemasekBarraGenome.fa -bed $PWD/DESeq2_DEGenes_RF_ctrl_ht.bed -fo $PWD/DESeq2_DEGenes_RF_ctrl_ht.fa -name`
+
+These sequences can now be used for functional analysis. 
+
+### Volcano plot
+
+```{r fig.width=11, fig.height=8}
+library(EnhancedVolcano)
+# Initialize an empty list to store volcano plots
+volcanos <- list()
+
+# Iterate over each item in the results list
+for (i in seq_along(results_list_all)) {
+  
+  rs <- results_list_all[[i]]
+  
+  title_text <- rs$comparison[1]
+  
+  # Create the volcano plot
+  temp_vc <- EnhancedVolcano(rs,
+                             subtitle = NULL,
+                             caption = NULL,
+                             col = c("grey30", "forestgreen", "royalblue", "red2"),
+                             title = title_text,
+                             lab = rs$gene_id,
+                             x = 'log2FoldChange',
+                             y = 'pvalue')
+  
+  # Append the plot to the list
+  volcanos[[i]] <- temp_vc 
+}
+
+volcano <- ggarrange(plotlist=volcanos, common.legend=TRUE)
+volcano
+
+saveRDS(volcano, file="dataFiles/volcano_expr.RDS")
+```
+
+### Venn diagram
+
+```{r}
+## get the unique gene IDs for each comparison
+LT_FT_genes <- (all_degs_table[all_degs_table$comparison == "LT_FT", "gene_id"])
+LT_Control_genes <- (all_degs_table[all_degs_table$comparison == "Control_LT", "gene_id"])
+LT_HT_genes <- (all_degs_table[all_degs_table$comparison == "LT_HT", "gene_id"])
+FT_Control_genes <- (all_degs_table[all_degs_table$comparison == "Control_FT", "gene_id"])
+FT_HT_genes <- (all_degs_table[all_degs_table$comparison == "FT_HT", "gene_id"])
+Control_HT_genes <- (all_degs_table[all_degs_table$comparison == "Control_HT", "gene_id"])
+
+length(LT_FT_genes$gene_id)
+length(LT_Control_genes$gene_id)
+length(LT_HT_genes$gene_id)
+length(FT_Control_genes$gene_id)
+length(FT_HT_genes$gene_id)
+length(Control_HT_genes$gene_id)
+
+## exclude LT-FT because it has the least DEGs and the Venn diagram looks terrible with 6
+
+# Create the Venn diagram
+venn_list <- list(#LT_FT = LT_FT_genes$gene_id,
+                  LT_Control = LT_Control_genes$gene_id,
+                  LT_HT = LT_HT_genes$gene_id,
+                  FT_Control = FT_Control_genes$gene_id,
+                  FT_HT = FT_HT_genes$gene_id,
+                  Control_HT = Control_HT_genes$gene_id)
+
+## try gg so its not annoying to plot
+library("ggVennDiagram")
+# Default plot
+ggvenn_lfc <- ggVennDiagram(
+  venn_list, 
+  label="count",
+  label_alpha = 0, ## remove label background
+  label_size=3,
+  edge_size = 0.25,
+  set_size = 3, ## size of set labels
+  category.names=c(#paste0("LT vs FT \n (", nrow(LT_FT_genes), ")\n"),
+                   paste0("LT vs Control \n (", nrow(LT_Control_genes), ")\n"),
+                   paste0("LT vs HT \n (", nrow(LT_HT_genes), ")\n"),
+                   paste0("FT vs Control \n (", nrow(FT_Control_genes), ")\n"),
+                   paste0("\nFT vs HT \n (", nrow(FT_HT_genes), ")"),
+                   paste0("\nHT vs Control \n (", nrow(Control_HT_genes), ")"))) +
+  scale_fill_gradient(low="blue",high = "yellow", name="Count")+
+  scale_colour_manual(values=c(rep("grey10", length(venn_list))))+
+  # expand axis to show long set labels
+  scale_x_continuous(expand = expansion(mult = .2))+
+  scale_y_continuous(expand = expansion(mult = .2))
+
+ggvenn_lfc
+
+# ggsave("figuresTables/venn_lfc.pdf", ggvenn_lfc, width=8.75*0.7, height=11.35*0.4, units="in")
+saveRDS(ggvenn_lfc, file="dataFiles/venn_expr.RDS")
+```
+
+```{r}
+topN<-20
+top20m <- assay(dds_l_vsd[head(order(-rowVars(assay(dds_l_vsd))),topN),])
+top20 <- row.names(top20m)
+
+## this method keeps multiple transcripts per gene (which we will combine later with CD-HIT)
+top20_table_x <- stringtie_merged_transcripts %>%
+  filter(gene_id %in% top20)
+
+## get file into bed format
+top20_degs_table_bed <- top20_table_x %>%
+  select(seqnames, start, end,
+         gene_id, score, strand) %>%
+  unique(.)
+
+## export
+write.table(top20_degs_table_bed, "dataFiles/DESeq2_DEGenes_top20.bed", quote=FALSE, sep="\t", row.names=FALSE, col.names=FALSE)
+```
+
+Get predicted proteins for the gene IDs.
+
+`## get fasta file for the sequences`
+
+`module load bedtools`
+`bedtools getfasta -fi TemasekBarraGenome.fa -bed dataFiles/DESeq2_DEGenes_top20.bed -fo dataFiles/DESeq2_DEGenes_top20.fasta -s -name`
+
+`cluster sequences with CD-HIT`
+
+`cd dataFiles`
+`module load cd-hit`
+`cd-hit-est -i DESeq2_DEGenes_top20.fasta -o DESeq2_DEGenes_top20_clustered.fasta -c 0.90 -n 10 -d 0 -M 16000 -T 8`
+
+`## run blast (inside slurm script)`
+
+`## run blast`
+`blastx -query dataFiles/DESeq2_DEGenes_top20_clustered.fasta \`
+`-db ncbiNrDb/nr_Actinopterygii \`
+`-out dataFiles/05_barra_deg_top20.tsv \`
+`-evalue 1e-5 -word_size 3 -num_alignments 20 -max_hsps 20 \`
+`-outfmt "6 qaccver saccver pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle" \`
+`-num_threads 16`
+
+```{r}
+## import results
+header <- c("query_id", "subject_acc_ver", "percent_identity", "alignment_length", "mismatches", 
+            "gap_opens", "query_start", "query_end", "subject_start", "subject_end", 
+            "evalue", "bit_score", "description")
+
+deg <- read.table("dataFiles/05_barra_deg_top20.tsv", sep="\t", 
+                  col.names=header)
+
+## DEG ----
+
+## filter
+fdeg <- deg %>%
+ ## keep only the best hit for each unique subject accession number
+ group_by(subject_acc_ver) %>%
+ dplyr::slice(which.min(evalue)) %>%
+ ungroup() %>%
+ ## remove any uninformative matches
+ filter(!grepl("hypothetical", description, ignore.case = TRUE) &
+         !grepl("uncharacterized", description, ignore.case = TRUE) &
+         !grepl("unnamed", description, ignore.case = TRUE)) %>%
+  ## keep only the best hit per query
+  group_by(query_id) %>%
+  dplyr::slice(which.max(bit_score))
+
+## NCBI summaries
+deg_ncbi <- rbind.data.frame(
+  c("zpcx", "zona pellucida protein C", "[Danio rerio:] Predicted to enable acrosin binding activity. Predicted to be involved in binding activity of sperm to zona pellucida; egg coat formation; and positive regulation of acrosome reaction.", "sexual development"), ##1
+  c("cldnd", "claudin d", "[Danio rerio:] Predicted to enable identical protein binding activity. Predicted to be involved in bicellular tight junction assembly and calcium-independent cell-cell adhesion via plasma membrane cell-adhesion molecules. Predicted to be located in cell junction and membrane. Predicted to be integral component of membrane. Predicted to be active in bicellular tight junction and plasma membrane. Is expressed in gill; gonad; integument; kidney; and muscle. Human ortholog(s) of this gene implicated in ovarian cancer and pancreatic cancer. Orthologous to several human genes including CLDN4 (claudin 4). [provided by Alliance of Genome Resources, Apr 2022]", "cellular sensing (membrane)"), ##2
+  c("h2a", "Histone H2A", "[Danio rerio:] Refers to a variety of closely related proteins involved in the structure of chromatin in eukaryotic cells. h2ax: Predicted to enable DNA binding activity. Acts upstream of or within cellular response to DNA damage stimulus. Predicted to be located in centrosome and chromosome. Predicted to be part of nucleosome. Is expressed in several structures, including brain; oocyte; proliferative region; sensory system; and unfertilized egg. Orthologous to human H2AX (H2A.X variant histone). [provided by Alliance of Genome Resources, Apr 2022]; h2az2b: Predicted to enable DNA binding activity. Acts upstream of or within DNA methylation involved in embryo development. Predicted to be located in chromosome and nucleus. Predicted to be part of nucleosome. Orthologous to several human genes including H2AZ1 (H2A.Z variant histone 1). [provided by Alliance of Genome Resources, Apr 2022]; h2az2a: Predicted to enable DNA binding activity. Predicted to be involved in heterochromatin assembly. Predicted to be located in chromosome and nucleus. Predicted to be part of nucleosome. Is expressed in ovarian follicle. Orthologous to human H2AZ2 (H2A.Z variant histone 2). [provided by Alliance of Genome Resources, Apr 2022]", "epigenetic"), ##3
+  c("naca", "nascent polypeptide associated complex subunit alpha", "[Danio rerio:] Predicted to enable unfolded protein binding activity. Acts upstream of or within definitive hemopoiesis and myofibril assembly. Located in cytoplasm and nucleus. Is expressed in cardiac muscle; hematopoietic system; skeletal muscle; and somite. Orthologous to several human genes including NACA (nascent polypeptide associated complex subunit alpha) and NACA2 (nascent polypeptide associated complex subunit alpha 2). [provided by Alliance of Genome Resources, Apr 2022] [Homo sapiens:] This gene encodes a protein that associates with basic transcription factor 3 (BTF3) to form the nascent polypeptide-associated complex (NAC). This complex binds to nascent proteins that lack a signal peptide motif as they emerge from the ribosome, blocking interaction with the signal recognition particle (SRP) and preventing mistranslocation to the endoplasmic reticulum. This protein is an IgE autoantigen in atopic dermatitis patients. Alternative splicing results in multiple transcript variants, but the full length nature of some of these variants, including those encoding very large proteins, has not been determined. There are multiple pseudogenes of this gene on different chromosomes. [provided by RefSeq, Feb 2016]", "regulatory (protein binding)"), ##4
+  c("znf271", "(peg3) zinc finger protein 271", "[Danio rerio:] Predicted to enable DNA-binding transcription activator activity, RNA polymerase II-specific and RNA polymerase II cis-regulatory region sequence-specific DNA binding activity. Predicted to be involved in regulation of transcription by RNA polymerase II. Predicted to be active in nucleus. [provided by Alliance of Genome Resources, Apr 2022]", "regulatory (transcription)"), ##5
+  c("srap", "si:ch1073-15f19.2", "[Danio rerio:] Predicted to be involved in cell-matrix adhesion and inflammatory response. Predicted to be located in membrane. Predicted to be integral component of membrane. [provided by Alliance of Genome Resources, Apr 2022]", "cellular sensing (membrane)"), ##6
+  c("fp1", "Adhesive plaque matrix protein", "[Mytilus coruscus:] Provides adhesiveness to the mussel's foot. Mussels produce one of the strongest water insoluble glues. The mussel's adhesive is a bundle of threads, called a byssus, formed by a fibrous collagenous core coated with adhesive proteins. [retrieved from Uni Prot, May 2024]", "unknown"), ##7
+  c("nedd4a", "NEDD4 E3 ubiquitin protein ligase a", "[Danio rerio:] Predicted to enable ubiquitin protein ligase activity. Acts upstream of or within endothelial to hematopoietic transition and negative regulation of Notch signaling pathway. Orthologous to human NEDD4 (NEDD4 E3 ubiquitin protein ligase). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] This gene is the founding member of the NEDD4 family of HECT ubiquitin ligases that function in the ubiquitin proteasome system of protein degradation. The encoded protein contains an N-terminal calcium and phospholipid binding C2 domain followed by multiple tryptophan-rich WW domains and, a C-terminal HECT ubiquitin ligase catalytic domain. It plays critical role in the regulation of a number of membrane receptors, endocytic machinery components and the tumor suppressor PTEN. [provided by RefSeq, Jul 2016]; [Mus musculus:] Enables several functions, including ionotropic glutamate receptor binding activity; protein phosphorylated amino acid binding activity; and sodium channel inhibitor activity. Involved in negative regulation of vascular endothelial growth factor receptor signaling pathway and regulation of dendrite morphogenesis. Acts upstream of or within several processes, including cellular protein metabolic process; circulatory system development; and neuromuscular junction development. Located in several cellular components, including cytosol; dendritic spine; and glutamatergic synapse. Part of ubiquitin ligase complex. Is active in postsynaptic cytosol. Is expressed in several structures, including alimentary system; eye; genitourinary system; limb; and nervous system. Orthologous to human NEDD4 (NEDD4 E3 ubiquitin protein ligase). [provided by Alliance of Genome Resources, Apr 2022]", "cellular sensing (signalling)"), ##8
+  c("zpd", "zona pellucida glycoprotein d", "[Danio rerio:] Predicted to be located in membrane. Predicted to be integral component of membrane. [provided by Alliance of Genome Resources, Apr 2022]", "sexual development"), ##9
+  c("zp3f.2", "zona pellucida glycoprotein 3f, tandem duplicate 2", "[Danio rerio:] Predicted to enable acrosin binding activity. Predicted to be involved in binding activity of sperm to zona pellucida; egg coat formation; and positive regulation of acrosome reaction. Predicted to be active in extracellular matrix. [provided by Alliance of Genome Resources, Apr 2022]", "sexual development"), ##10
+  c("lrx5", "Leucine-rich repeat extensin-like protein 5", "[Arabidopsis thaliana:] Modulates cell morphogenesis by regulating cell wall formation and assembly, and/or growth polarization. [retrieved from Uni Prot, May 2024]", "cellular sensing"), ##11
+  c("ddx17", "DEAD-box helicase 17", "[Danio rerio:] Predicted to enable RNA binding activity and RNA helicase activity. Predicted to be involved in alternative mRNA splicing, via spliceosome. Predicted to be part of ribonucleoprotein complex. Predicted to be active in nucleus. Orthologous to human DDX17 (DEAD-box helicase 17). [provided by Alliance of Genome Resources, Apr 2022]", "regulatory (mRNA splicing)"), ##12
+  c("lrx1", "Leucine-rich repeat extensin-like protein 1", "[Arabidopsis thaliana:] Modulates cell morphogenesis by regulating cell wall formation and assembly, and/or growth polarization. Together with LRX2, component of the extracellular mechanism regulating root hair morphogenesis and elongation. [retrieved from Uni Prot, May 2024]", "cellular sensing"), ##13
+  c("rtkj", "RNA-directed DNA polymerase from mobile element jockey", "[Drosophila funebris:] Prefers poly(rC) and poly(rA) as template and activated DNA is not effective. [retrieved from Uni Prot, May 2024]", "regulatory"), ##14
+  c("fabp1b.1", "fatty acid binding protein 1b, tandem duplicate 1", "[Danio rerio:] Predicted to enable fatty acid binding activity. Acts upstream of or within response to lipid. Predicted to be located in cytoplasm. Predicted to be active in cytosol and nucleus. Is expressed in gill; heart; liver; pleuroperitoneal region; and yolk syncytial layer. Orthologous to human FABP1 (fatty acid binding protein 1). [provided by Alliance of Genome Resources, Apr 2022]", "unknown"), ##15
+  c("fp1.x1", "Adhesive plaque matrix protein isoform X1", "[Mytilus coruscus:] Provides adhesiveness to the mussel's foot. Mussels produce one of the strongest water insoluble glues. The mussel's adhesive is a bundle of threads, called a byssus, formed by a fibrous collagenous core coated with adhesive proteins. [retrieved from Uni Prot, May 2024]", "unknown"), ##16
+  c("iws1", "interacts with SUPT6H, CTD assembly factor 1", "[Homo sapiens:] Involved in regulation of histone modification; regulation of mRNA export from nucleus; and regulation of mRNA processing. Located in nucleoplasm. [provided by Alliance of Genome Resources, Apr 2022]", "epigenetic"), ##17
+  c("c1qtnf1", "C1q and TNF related 1", "[Danio rerio:] Predicted to be located in extracellular region. Predicted to be active in extracellular space. Orthologous to human C1QTNF1 (C1q and TNF related 1). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] Predicted to enable cytokine activity. Involved in positive regulation of cytokine production and positive regulation of signal transduction. Located in extracellular space. [provided by Alliance of Genome Resources, Apr 2022]", "cellular sensing (signal transduction)"), ## 18
+  c("srrm1", "serine/arginine repetitive matrix 1", "[Danio rerio:] Predicted to act upstream of or within mRNA processing. Orthologous to human SRRM1 (serine and arginine repetitive matrix 1). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] Enables RNA binding activity. Predicted to be involved in mRNA splicing, via spliceosome. Located in nuclear speck. Part of catalytic step 2 spliceosome. Biomarker of gestational diabetes. [provided by Alliance of Genome Resources, Apr 2022]", "regulatory")) ## 19
+
+names(deg_ncbi) <- c("symbol", "full_name", "summary", "category")
+
+## add to deg_ncbi
+fdegn <- fdeg %>%
+  cbind(., deg_ncbi) %>%
+  select(query_id, subject_acc_ver, bit_score, description, symbol, full_name, summary, category)
+
+## export for supp
+write.csv(fdegn, "figuresTables/Table S[DEG].csv", row.names=F)
+
+## get ids
+top20df <- as.data.frame(top20m)
+top20df$id <- row.names(top20m)
+top20df <- top20df %>%
+  select(id)
+
+## get gene symbols into top10m
+symbols <- fdegn %>%
+  ungroup(.) %>%
+  mutate(id = sub("::.*", "", query_id)) %>%
+  select(id, symbol) %>%
+  full_join(., top20df) %>%
+  mutate(symbol=replace_na(symbol, "unknown"))
+
+## match them to the matrix rows
+rownames(top20m) <- symbols$symbol[match(rownames(top20m),
+                                                 symbols$id)]
+```
+
+### Heat map
+
+```{r fig.width=9, fig.height=5}
+library("gplots")
+library("dendextend")
+library("tidyr")
+library("RColorBrewer")
+
+## make helper function to map metadata category to color
+conditionToColour <- function(x){
+  colorsVector = ifelse(x["condition"] == "LT", "#21908CFF", 
+                        ifelse(x["condition"] == "HT", "#ED7953FF", 
+                               ifelse(x["condition"] == "FT", "#8FD744FF", 
+                                      ifelse(x["condition"] == "Control", "#3B528BFF", "black"))))
+  return(colorsVector)
+}
+
+clrs <- c("#21908CFF", "#3B528BFF", "#ED7953FF", "#8FD744FF")
+
+hmcol<- rev(colorRampPalette(brewer.pal(9, 'PRGn'))(100))
+
+png("figuresTables/Figure [deg_heatmap].png", width = 8, height = 5, units = "in", res=600)
+
+heatmap.2(top20m,
+          scale='none', 
+          trace = "none",
+          tracecol = "black",
+          col = hmcol,
+          # labRow = F,
+          ColSideColors=conditionToColour(sample_table),
+          margins = c(7,5),
+          key.xlab = "log(2)FoldChange",
+          key.title = "",
+          cexCol = 1,
+          cexRow = 1,
+          labRow=as.expression(lapply(rownames(top20m), function(a) bquote(italic(.(a))))),
+          main=paste("DEGs"))
+
+legend(x=0.9, y=1.15, xpd = TRUE,
+       legend = unique(sample_table$condition),
+       col = clrs,
+       lty= 1.5,   lwd = 2,
+       cex=.6)
+
+dev.off()
+
+## for markdown
+heatmap.2(top20m,
+          scale='none', 
+          trace = "none",
+          tracecol = "black",
+          col = hmcol,
+          # labRow = F,
+          ColSideColors=conditionToColour(sample_table),
+          margins = c(7,5),
+          key.xlab = "log(2)FoldChange",
+          key.title = "",
+          cexCol = 1,
+          cexRow = 1,
+          labRow=as.expression(lapply(rownames(top20m), function(a) bquote(italic(.(a))))),
+          main=paste("DEGs"))
+
+legend(x=0.9, y=1.15, xpd = TRUE,
+       legend = unique(sample_table$condition),
+       col = clrs,
+       lty= 1.5,   lwd = 2,
+       cex=.6)
+```
+```{r fig.width=8, fig.height=11}
+## join with DMCs
+library(cowplot)
+
+deg_png <- png::readPNG("figuresTables/Figure [deg_heatmap].png")
+dmc_png <- png::readPNG("figuresTables/Figure [dmc_heatmap].png")
+
+deg_hm<-ggdraw()+draw_image(deg_png, clip="on")
+dmc_hm<-ggdraw()+draw_image(dmc_png, clip="on")
+
+hs <- plot_grid(deg_hm, dmc_hm,
+                labels=c("A", "B"),
+                ncol=1)
+
+hs
+
+ggplot2::ggsave(plot=hs, filename="figuresTables/Figure [heatmap].pdf",
+       device="pdf", width=8, height=10, units=c("in"))
+
+ggplot2::ggsave(plot=hs, filename="figuresTables/Figure [heatmap].png",
+       device="png", width=8, height=10, units=c("in"))
+```
+
+
+```{r}
+# END SCRIPT
+```
+
+
+

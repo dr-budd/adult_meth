@@ -1,0 +1,601 @@
+---
+title: "methylKit analysis"
+output:
+  html_notebook:
+    code_folding: none
+---
+
+```{r setup, include=FALSE}
+current_directory <- dirname(rstudioapi::getActiveDocumentContext()$path)
+knitr::opts_knit$set(root.dir=normalizePath(paste0(current_directory)))
+```
+
+```{r load_libraries, include=FALSE}
+## load libraries 
+library(tidyverse)
+library(RColorBrewer)
+library(ggVennDiagram)
+library(EnhancedVolcano)
+library(methylKit)
+library(ggpubr)
+```
+
+following: https://nbis-workshop-epigenomics.readthedocs.io/en/latest/content/tutorials/methylationSeq/Seq_Tutorial.html (for import)
+
+### Load Datasets
+
+```{r}
+# Define the list containing the bismark coverage files.
+file.list <- list("dataFiles/bismarkData/24D1_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz",
+                  "dataFiles/bismarkData/24D2_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz",
+                  "dataFiles/bismarkData/24D3_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz",
+                  "dataFiles/bismarkData/28D1_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz",
+                  "dataFiles/bismarkData/28D2_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz",
+                  "dataFiles/bismarkData/28D3_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz",
+                  "dataFiles/bismarkData/34D1_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz",
+                  "dataFiles/bismarkData/34D2_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz",
+                  "dataFiles/bismarkData/34D5_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz",
+                  "dataFiles/bismarkData/FD1_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz",
+                  "dataFiles/bismarkData/FD2_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz",
+                  "dataFiles/bismarkData/FD3_R1.merged_trimmed_bismark_bt2_pe.deduplicated.bismark.cov.gz")
+
+## read in a table that contains the sample IDs
+sample_info <- read.table("dataFiles/sample_information_DNA.txt", header=TRUE)
+
+# read the listed files into a methylRawList object making sure the other
+# parameters are filled in correctly.
+myobj <- methRead(
+  location = file.list,
+  sample.id = list('24D1','24D2','24D3','28D1','28D2','28D3','34D1','34D2','34D5','FD1','FD2','FD3'),
+  assembly = "TLL_Latcal_v3",
+  dbtype = NA,
+  pipeline = "bismarkCoverage",
+  header = FALSE,
+  skip = 0,
+  sep = "\t",
+  context = "CpG",
+  resolution = "base",
+  treatment = c(1,1,1,0,0,0,2,2,2,3,3,3),
+  dbdir = getwd(),
+  mincov = 10
+)
+
+# check number of samples
+myobj
+
+# What type of data is stored here?
+head(myobj[[1]])
+```
+
+### Descriptive statistics on samples
+
+```{r fig.width=8, fig.height=11}
+## plot the histogram for percent methylation distribution
+par(mfrow=c(4,3))
+getMethylationStats(myobj[[1]],plot=TRUE,both.strands=FALSE)
+getMethylationStats(myobj[[2]],plot=TRUE,both.strands=FALSE)
+getMethylationStats(myobj[[3]],plot=TRUE,both.strands=FALSE)
+getMethylationStats(myobj[[4]],plot=TRUE,both.strands=FALSE)
+getMethylationStats(myobj[[5]],plot=TRUE,both.strands=FALSE)
+getMethylationStats(myobj[[6]],plot=TRUE,both.strands=FALSE)
+getMethylationStats(myobj[[7]],plot=TRUE,both.strands=FALSE)
+getMethylationStats(myobj[[8]],plot=TRUE,both.strands=FALSE)
+getMethylationStats(myobj[[9]],plot=TRUE,both.strands=FALSE)
+getMethylationStats(myobj[[10]],plot=TRUE,both.strands=FALSE)
+getMethylationStats(myobj[[11]],plot=TRUE,both.strands=FALSE)
+getMethylationStats(myobj[[12]],plot=TRUE,both.strands=FALSE)
+```
+
+```{r fig.width=8, fig.height=11}
+## plot the read coverage per base information
+par(mfrow=c(4,3))
+getCoverageStats(myobj[[1]],plot=TRUE,both.strands=FALSE)
+getCoverageStats(myobj[[2]],plot=TRUE,both.strands=FALSE)
+getCoverageStats(myobj[[3]],plot=TRUE,both.strands=FALSE)
+getCoverageStats(myobj[[4]],plot=TRUE,both.strands=FALSE)
+getCoverageStats(myobj[[5]],plot=TRUE,both.strands=FALSE)
+getCoverageStats(myobj[[6]],plot=TRUE,both.strands=FALSE)
+getCoverageStats(myobj[[7]],plot=TRUE,both.strands=FALSE)
+getCoverageStats(myobj[[8]],plot=TRUE,both.strands=FALSE)
+getCoverageStats(myobj[[9]],plot=TRUE,both.strands=FALSE)
+getCoverageStats(myobj[[10]],plot=TRUE,both.strands=FALSE)
+getCoverageStats(myobj[[11]],plot=TRUE,both.strands=FALSE)
+getCoverageStats(myobj[[12]],plot=TRUE,both.strands=FALSE)
+```
+
+### Filtering samples based on read coverage
+
+```{r}
+## filter samples based on coverage
+filtered.myobj=filterByCoverage(myobj,
+                                lo.count=10, ##  (in this case we already did this when reading in the files…) 
+                                lo.perc=NULL,
+                                hi.count=NULL,
+                                hi.perc=99.9)
+```
+
+### Normalization 
+
+following: https://nbis-workshop-epigenomics.readthedocs.io/en/latest/content/tutorials/methylationSeq/Seq_Tutorial.html
+
+```{r}
+## normalise coverage between samples using scaling factor derived from the median
+myobj.filt.norm <- normalizeCoverage(filtered.myobj, method = "median")
+
+## export
+saveRDS(myobj.filt.norm, "dataFiles/myobj_filt_norm.rds")
+
+# getwd()
+```
+
+
+### Merge data
+
+```{r}
+## extract the bases that are covered by reads in all our samples
+meth <- methylKit::unite(myobj.filt.norm)
+head(meth)
+```
+### Further Filtering
+
+High-throughput methylation data contains a lot of CpG sites that have no or little variation among study subjects and are not all that informative for downstream analyses. Nonspecific CpG filtering (i.e., not considering phenotype) is a common dimension reduction procedure performed prior to cluster analysis and differential methylation. For exploratory analysis, it is of general interest to see how samples relate to each other and we might want to remove CpGs that are not variable before doing that. For differential methylation, removing non variable CpGs prior to the analysis will lower the number of tests that needs to be performed, thus reducing multiple correction penalties.
+
+The most commonly used and simple method of standard deviation filtering on methylation ratio values (equivalent to Beta values) has been shown to be robust and consistent to different real datasets and would suffice for most occasions.
+
+```{r}
+# get percent methylation matrix
+pm=percMethylation(meth)
+
+# calculate standard deviation of CpGs
+sds=matrixStats::rowSds(pm)
+
+# Visualize the distribution of the per-CpG standard deviation
+# to determine a suitable cutoff
+hist(sds, breaks = 100)
+
+# keep only CpG with standard deviations larger than 2%
+meth <- meth[sds > 2]
+
+# This leaves us with this number of CpG sites
+nrow(meth)
+```
+### Data Structure/Outlier Detection
+
+```{r}
+## check the correlation between samples
+getCorrelation(meth, plot=TRUE)
+```
+
+```{r}
+## visualise data structure using dendrogram
+clusterSamples(meth, dist="correlation", method="ward", plot=TRUE)
+```
+
+```{r}
+## Plot PCA
+PCASamples(meth)
+```
+
+### Differential Methylation - single CpG sites
+
+
+```{r warning=FALSE, message=FALSE}
+# Test for differential methylation... This might take a few minutes.
+myDiff <- calculateDiffMeth(meth,
+                            overdispersion = "MN",
+                            adjust="BH")
+```
+
+Did the treatment vector go into it? 
+
+```{r}
+getTreatment(myDiff)
+```
+
+```{r}
+myDiff
+```
+
+### Pairwise comparisons
+
+See: https://groups.google.com/g/methylkit_discussion/c/mTpy8I9dJUk) for why this is necessary and can be done using `reorganise`
+
+```{r}
+# Split sample IDs based on treatment
+split_samples <- split(meth@sample.ids, meth@treatment)
+
+# Find all combinations of two different treatments
+unique_treatments <- unique(meth@treatment)
+treatment_combinations <- combn(unique_treatments, 2, simplify = FALSE)
+
+# Function to get combined sample IDs and treatments for a given pair of treatments
+get_combination <- function(treatment_pair) {
+  treatment1 <- treatment_pair[1]
+  treatment2 <- treatment_pair[2]
+
+  combined_samples <- c(split_samples[[as.character(treatment1)]], split_samples[[as.character(treatment2)]])
+  combined_treatment <- c(rep(treatment1, length(split_samples[[as.character(treatment1)]])),
+                          rep(treatment2, length(split_samples[[as.character(treatment2)]])))
+
+  list(sample.ids = combined_samples, treatment = combined_treatment)
+}
+
+# Apply the function to each combination
+combinations <- lapply(treatment_combinations, get_combination)
+```
+
+```{r}
+## use them to create combined table
+myDiff_mcp <- NULL
+for (i in seq_along(combinations)) {
+  temp_meth <- reorganize(meth, 
+                          sample.ids=combinations[[i]]$sample.ids, 
+                          treatment=combinations[[i]]$treatment)
+  temp_mydiff <- calculateDiffMeth(temp_meth,
+                                   overdispersion="MN",
+                                   adjust="BH")
+  temp_mydiffdata <- getData(temp_mydiff) %>%
+    mutate(comparison = paste(substr(combinations[[i]]$sample.ids[1], 1, 2), 
+                              substr(combinations[[i]]$sample.ids[4], 1, 2), 
+                              sep="_"))
+  myDiff_mcp <- rbind(myDiff_mcp, temp_mydiffdata)
+}
+```
+
+
+```{r fig.width=11, fig.height=8}
+# Initialize an empty list to store volcano plots
+volcanos <- list()
+
+# Iterate over each item in the results
+for (cmp in levels(factor(myDiff_mcp$comparison))) {
+  
+  print(cmp)
+
+  temp_title<-ifelse(cmp=="24_28", "Control_LT", 
+                       ifelse(cmp=="24_34", "LT_HT", 
+                              ifelse(cmp=="24_FD", "LT_FT", 
+                                     ifelse(cmp=="28_34", "Control_HT", 
+                                            ifelse(cmp=="28_FD", "Control_FT",
+                                                   ifelse( cmp=="34_FD", "FT_HT", 
+                                                           "error"))))))
+  
+  temp_df <- myDiff_mcp %>%
+    filter(comparison == cmp)
+  
+  # Create the volcano plot
+  temp_vc <- EnhancedVolcano(temp_df,
+                             subtitle = NULL,
+                             caption = NULL,
+                             col = c("grey30", "forestgreen", "royalblue", "red2"),
+                             title = temp_title,
+                             lab = temp_df$chr,
+                             xlab = "meth.diff",
+                             ylab = "pvalue",
+                             x = 'meth.diff',
+                             y = 'pvalue')
+  
+  # Append the plot to the list
+  volcanos[[length(volcanos)+1]] <- temp_vc 
+}
+
+volcano <- ggpubr::ggarrange(plotlist=volcanos, common.legend=TRUE)
+volcano
+saveRDS(volcano, file = "dataFiles/volcano_meth.RDS")
+```
+
+```{r}
+## get sig only
+myDiff_mcp_sig <- myDiff_mcp %>%
+  filter(qvalue < 0.05) %>%
+  mutate(coord=paste0(chr, ":", start, "-", end))
+
+## get the gene/site/loci IDs for each comparison
+for (cmp in levels(factor(myDiff_mcp_sig$comparison))) {
+  print(cmp)
+  temp_name <- paste0(cmp, "_locs")
+  temp_df <- myDiff_mcp_sig %>%
+    filter(comparison == cmp) %>%
+    pull(coord)
+  assign(temp_name, temp_df)
+  print(length(temp_df))
+  
+}
+
+## exclude LT-Ctrl because it has the least and the Venn diagram looks terrible with 6
+
+# Create the Venn diagram
+venn_list <- list(LT_FT = `24_FD_locs`,
+                  # LT_Control = `24_28_locs`,
+                  LT_HT = `24_34_locs`,
+                  FT_Control = `28_FD_locs`,
+                  FT_HT = `34_FD_locs`,
+                  Control_HT = `28_34_locs`)
+
+# Default plot
+ggvenn <- ggVennDiagram(
+  venn_list, 
+  label="count",
+  label_alpha = 0, ## remove label background
+  label_size=3,
+  edge_size = 0.25,
+  set_size = 3, ## size of set labels
+  category.names=c(paste0("LT vs FT \n (", length(`24_FD_locs`), ")\n"),
+                   # paste0("LT vs Control \n (", length(`24_28_locs`), ")\n"),
+                   paste0("LT vs HT \n (", length(`24_34_locs`), ")\n"),
+                   paste0("FT vs Control \n (", length(`28_FD_locs`), ")\n"),
+                   paste0("\nFT vs HT \n (", length(`34_FD_locs`), ")"),
+                   paste0("\nHT vs Control \n (", length(`28_34_locs`), ")"))) +
+  scale_fill_gradient(low="blue",high = "yellow", name="Count")+
+  scale_colour_manual(values=c(rep("grey10", length(venn_list))))+
+  # expand axis to show long set labels
+  scale_x_continuous(expand = expansion(mult = .2))+
+  scale_y_continuous(expand = expansion(mult = .2))
+
+ggvenn
+
+# ggsave("figuresTables/meth_venn.pdf", ggvenn, width=8.75*0.7, height=11.35*0.4, units="in")
+saveRDS(ggvenn, file = "dataFiles/venn_meth.RDS")
+```
+
+### Find DMGs (HT-Control)
+
+```{r}
+## create a bed 12 file of the DMCs (Control-HT)
+
+## HT-control
+Methylkit_DMCs_ctrl_ht_bed <- myDiff_mcp_sig %>%
+  filter(comparison == "28_34") %>%
+  dplyr::rename(chrom = chr) %>%
+  dplyr::select(chrom, start, end)
+
+write.table(Methylkit_DMCs_ctrl_ht_bed, "dataFiles/Methylkit_DMCs_ctrl_ht.bed", 
+            sep="\t", col.names=FALSE, row.names = FALSE, append = TRUE, quote = FALSE)
+```
+
+On HPC:
+
+`## load bedtools`
+
+`module load bedtools/`
+
+`## sort the genome`
+
+`bedtools sort -i TemasekBarraGenome_Annotation.gff3 > TemasekBarraGenome_Annotation_sorted.gff3`
+
+`## get the coordinates for the genes closest to the DMCs`
+
+`bedtools closest -a Methylkit_DMCs_ctrl_ht.bed -b  TemasekBarraGenome_Annotation_sorted.gff3 -wa -wb > Methylkit_DMCs_ctrl_ht_closest_gff3.bed`
+
+`## format the output`
+
+`awk '$6 == "gene" {print $1"\t"$7"\t"$8"\t"$12"\t"".""\t"$10}' Methylkit_DMCs_ctrl_ht_closest_gff3.bed > Methylkit_DMCs_ctrl_ht_closest_gff3_genes.bed`
+
+`## get a fasta file of sequences to perform functional analysis`
+
+`bedtools getfasta -fi TemasekBarraGenome.fa -bed Methylkit_DMCs_ctrl_ht_closest_gff3_genes.bed -fo Methylkit_DMCs_ctrl_ht_closest_gff3_genes_sequences.fasta -s -name`
+
+These sequences can now be used for functional analysis. 
+
+### Top 20 DMCs
+
+```{r}
+## get significant DMCs
+significantDMCs <- getMethylDiff(myDiff, difference=25, qvalue=0.05)
+
+# Create an empty vector to store row numbers
+DMCPositionsAll <- rep(0, times = length(significantDMCs$chr)) 
+
+# For each DMC, save the row number where that DMC is found in methylationInformationFilteredCov5All. This will be used to subset the methylBase object with DMC information
+for (i in 1:length(DMCPositionsAll)) {
+ DMCPositionsAll[i] <- which(getData(significantDMCs)$start[i] == getData(meth)$start)
+} 
+
+# Subset methylationInformationFilteredCov5Destrand to only include DMC and save as a new methylBase object
+DMCMatrixAll <- meth[DMCPositionsAll,] 
+
+# Confirm that start columns are identical. If they are identical, the sum of all TRUE statements should equal the length of the original methylBase object
+sum((DMCMatrixAll$start) == (significantDMCs$start)) == length(significantDMCs$start) 
+
+## create a bed 12 file of the top 20 DEGs
+Methylkit_DMCs_top20_bed <- data.frame(DMCMatrixAll) %>%
+  dplyr::rename(chrom = chr) %>%
+  dplyr::select(chrom, start, end)
+
+write.table(Methylkit_DMCs_top20_bed, "dataFiles/Methylkit_DMCs_top20.bed", 
+            sep="\t", col.names=FALSE, row.names = FALSE, append = TRUE, quote = FALSE)
+```
+
+Get DMGs and annotate:
+
+`## get the coordinates for the genes closest to the DMCs`
+
+`bedtools closest -a dataFiles/Methylkit_DMCs_top20.bed -b  TemasekBarraGenome_Annotation_sorted.gff3 -wa -wb > dataFiles/Methylkit_DMCs_top20_closest_gff3.bed`
+
+`## format the output`
+
+`awk '$6 == "gene" {print $1"\t"$7"\t"$8"\t"$12"\t"".""\t"$10}' dataFiles/Methylkit_DMCs_top20_closest_gff3.bed > dataFiles/Methylkit_DMCs_top20_closest_gff3_genes.bed`
+
+`## get a fasta file of sequences`
+
+`bedtools getfasta -fi TemasekBarraGenome.fa -bed dataFiles/Methylkit_DMCs_top20_closest_gff3_genes.bed -fo dataFiles/Methylkit_DMCs_top20_closest_gff3_genes_sequences.fasta -s -name`
+
+`## run blast (inside slurm script)`
+
+`blastx -query dataFiles/Methylkit_DMCs_top20_closest_gff3_genes_sequences.fasta \`
+`-db ncbiNrDb/nr_Actinopterygii \`
+`-out dataFiles/05_barra_dmc_top20.tsv \`
+`-evalue 1e-5 -word_size 3 -num_alignments 20 -max_hsps 20 \`
+`-outfmt "6 qaccver saccver pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle" \`
+`-num_threads 16`
+
+```{r}
+## import data
+header <- c("query_id", "subject_acc_ver", "percent_identity", "alignment_length", "mismatches", 
+            "gap_opens", "query_start", "query_end", "subject_start", "subject_end", 
+            "evalue", "bit_score", "description")
+
+dmc <- read.table("dataFiles/05_barra_dmc_top20.tsv", sep="\t", 
+                  col.names=header)
+
+## DMG ----
+
+## filter
+fdmc <- dmc %>%
+ ## keep only the best hit for each unique subject accession number
+ group_by(subject_acc_ver) %>%
+ dplyr::slice(which.min(evalue)) %>%
+ ungroup() %>%
+ ## remove any uninformative matches
+ filter(!grepl("hypothetical", description, ignore.case = TRUE) &
+         !grepl("uncharacterized", description, ignore.case = TRUE) &
+         !grepl("unnamed", description, ignore.case = TRUE)) %>%
+  ## keep only the best hit per query
+  group_by(query_id) %>%
+  dplyr::slice(which.max(bit_score))
+
+## NCBI summaries
+dmc_ncbi <- rbind.data.frame(
+  c("tada1", "transcriptional adapter 1", "[Danio rerio:] Predicted to enable transcription coactivator activity. Predicted to be involved in regulation of transcription by RNA polymerase II. Predicted to be located in nucleus. Predicted to be part of SAGA complex. Orthologous to human TADA1 (transcriptional adaptor 1). [provided by Alliance of Genome Resources, Apr 2022] [Homo sapiens:] TADA1L is a protein subunit of the human STAGA complex (SPT3; (MIM 602947)/TAF9 (MIM 600822)/GCN5 (MIM 602301) acetyltransferase complex), which is a chromatin-modifying multiprotein complex (Martinez et al., 2001 [PubMed 11564863]).[supplied by OMIM, Apr 2009]", "epigenetic"),
+  c("cntn4", "contactin 4", "[Danio rerio:] Predicted to enable cell-cell adhesion mediator activity. Predicted to be involved in axon guidance; brain development; and cell-cell adhesion. Predicted to be active in axon and plasma membrane. Orthologous to several human genes including CNTN4 (contactin 4). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] This gene encodes a member of the contactin family of immunoglobulins. Contactins are axon-associated cell adhesion molecules that function in neuronal network formation and plasticity. The encoded protein is a glycosylphosphatidylinositol-anchored neuronal membrane protein that may play a role in the formation of axon connections in the developing nervous system. Deletion or mutation of this gene may play a role in 3p deletion syndrome and autism spectrum disorders. Alternative splicing results in multiple transcript variants. [provided by RefSeq, May 2011]", "cellular sensing (membrane)"),
+  c("celsr1", "cadherin EGF LAG seven-pass G-type receptor 1a", "[Danio rerio:] Predicted to enable G protein-coupled receptor activity and calcium ion binding activity. Acts upstream of or within cell migration involved in gastrulation; heart development; and neural tube development. Predicted to be located in plasma membrane. Predicted to be integral component of membrane. Is expressed in several structures, including axis; germ ring; heart; optic primordium; and pleuroperitoneal region. Human ortholog(s) of this gene implicated in hereditary lymphedema. Orthologous to human CELSR1 (cadherin EGF LAG seven-pass G-type receptor 1). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] The protein encoded by this gene is a member of the flamingo subfamily, part of the cadherin superfamily. The flamingo subfamily consists of nonclassic-type cadherins; a subpopulation that does not interact with catenins. The flamingo cadherins are located at the plasma membrane and have nine cadherin domains, seven epidermal growth factor-like repeats and two laminin A G-type repeats in their ectodomain. They also have seven transmembrane domains, a characteristic unique to this subfamily. It is postulated that these proteins are receptors involved in contact-mediated communication, with cadherin domains acting as homophilic binding regions and the EGF-like domains involved in cell adhesion and receptor-ligand interactions. This particular member is a developmentally regulated, neural-specific gene which plays an unspecified role in early embryogenesis. [provided by RefSeq, Jul 2008]", "cellular sensing"),
+  c("spire1", "spire type actin nucleation factor 1a", "[Danio rerio:] Predicted to enable actin binding activity. Predicted to be involved in several processes, including cytoskeleton organization; cytoskeleton-dependent cytokinesis; and positive regulation of double-strand break repair. Predicted to act upstream of or within actin nucleation; protein transport; and vesicle-mediated transport. Predicted to be located in several cellular components, including cleavage furrow; cytosol; and perinuclear region of cytoplasm. Predicted to be active in cell cortex and cytoplasmic vesicle membrane. Orthologous to human SPIRE1 (spire type actin nucleation factor 1). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] Spire proteins, such as SPIRE1, are highly conserved between species. They belong to the family of Wiskott-Aldrich homology region-2 (WH2) proteins, which are involved in actin organization (Kerkhoff et al., 2001 [PubMed 11747823]).[supplied by OMIM, Mar 2008]", "regeneration"),
+  c("lbh", "LBH regulator of WNT signaling pathway", "[Danio rerio:] Acts upstream of or within embryonic viscerocranium morphogenesis and neural crest cell migration. Predicted to be located in cytoplasm. Predicted to be active in nucleus. Is expressed in several structures, including brain; digestive system; head; neural crest cell; and pleuroperitoneal region. Orthologous to human LBH (LBH regulator of WNT signaling pathway). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] Involved in negative regulation of transcription, DNA-templated; positive regulation of transcription, DNA-templated; and regulation of MAPK cascade. Located in cytoplasm and nucleus. Part of protein-containing complex. [provided by Alliance of Genome Resources, Apr 2022]", "regulatory"),
+  c("adgra2", "adhesion G protein-coupled receptor A2", "[Danio rerio:] Predicted to enable G protein-coupled receptor activity. Involved in positive regulation of canonical Wnt signaling pathway. Acts upstream of or within Wnt signaling pathway; blood vessel morphogenesis; and dorsal root ganglion development. Located in plasma membrane. Part of Wnt signalosome. Is expressed in several structures, including eye; heart; integument; liver; and pleuroperitoneal region. Orthologous to human ADGRA2 (adhesion G protein-coupled receptor A2). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] Predicted to enable G protein-coupled receptor activity. Involved in positive regulation of canonical Wnt signaling pathway. Part of Wnt signalosome. [provided by Alliance of Genome Resources, Apr 2022]", "cellular sensing"),
+  c("CLEC20A", "C-type lectin domain containing 20A", "[Homo sapiens:] Predicted to enable carbohydrate binding activity. [provided by Alliance of Genome Resources, Apr 2022]", "unknown"),
+  c("UNC79", "unc-79 homolog, NALCN channel complex subunit", "[Homo sapiens:] The NALCN channel is responsible for Na(+) leak currents. The protein encoded by this gene, along with UNC80, is an accessory subunit of the NALCN channel that contributes to the Ca(2+) sensitivity of the channel. [provided by RefSeq, Sep 2016]", "cellular sensing"),
+  c("znf503", "zinc finger protein 503", "[Danio rerio:] Predicted to enable metal ion binding activity. Acts upstream of or within embryonic camera-type eye morphogenesis and hindbrain development. Located in nucleus. Is expressed in several structures, including external yolk syncytial layer; mesoderm; nervous system; neural tube; and optic cup. Orthologous to human ZNF503 (zinc finger protein 503). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] Predicted to enable metal ion binding activity. Involved in G1 to G0 transition involved in cell differentiation; negative regulation of cell population proliferation; and negative regulation of gene expression. Predicted to be active in nucleus. [provided by Alliance of Genome Resources, Apr 2022]", "cellular sensing, degeneration"),
+  c("smyd2", "SET and MYND domain containing 2", "[Danio rerio:] Predicted to enable RNA polymerase II complex binding activity and histone methyltransferase activity (H3-K36 specific). Acts upstream of or within several processes, including caudal fin development; heart contraction; and regulation of sarcomere organization. Predicted to be located in cytosol. Predicted to be active in nucleus. Is expressed in heart primordium; muscle cell; and somite. Orthologous to human SMYD2 (SET and MYND domain containing 2). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] SET domain-containing proteins, such as SMYD2, catalyze lysine methylation (Brown et al., 2006 [PubMed 16805913]).[supplied by OMIM, Nov 2008]", "epigenetic"),
+  c("ndor1", "NADPH dependent diflavin oxidoreductase 1", "[Danio rerio:] Predicted to enable FMN binding activity; flavin adenine dinucleotide binding activity; and oxidoreductase activity. Predicted to be involved in cell death and cellular response to menadione. Predicted to be located in perinuclear region of cytoplasm. Predicted to be active in cytosol. Orthologous to human NDOR1 (NADPH dependent diflavin oxidoreductase 1). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] This gene encodes an NADPH-dependent diflavin reductase that contains both flavin mononucleotide (FMN) and flavin adenine dinucleotide (FAD) binding domains. The encoded protein catalyzes the transfer of electrons from NADPH through FAD and FMN cofactors to potential redox partners. Alternative splicing results in multiple transcript variants. [provided by RefSeq, Mar 2012]", "cellular sensing"),
+  c("hoxa10", "homeobox A10", "[Danio rerio:] Predicted to enable DNA-binding transcription factor activity, RNA polymerase II-specific and RNA polymerase II cis-regulatory region sequence-specific DNA binding activity. Predicted to be involved in regulation of transcription by RNA polymerase II. Predicted to act upstream of or within regulation of transcription, DNA-templated. Predicted to be active in nucleus. Is expressed in several structures, including CNS interneuron; chondroblast; mesenchyme; myoblast; and pectoral fin bud. Orthologous to human HOXA10 (homeobox A10). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] In vertebrates, the genes encoding the class of transcription factors called homeobox genes are found in clusters named A, B, C, and D on four separate chromosomes. Expression of these proteins is spatially and temporally regulated during embryonic development. This gene is part of the A cluster on chromosome 7 and encodes a DNA-binding transcription factor that may regulate gene expression, morphogenesis, and differentiation. More specifically, it may function in fertility, embryo viability, and regulation of hematopoietic lineage commitment. Alternatively spliced transcript variants have been described. Read-through transcription also exists between this gene and the downstream homeobox A9 (HOXA9) gene. [provided by RefSeq, Mar 2011]", "regulatory"),
+  c("eefsec", "eukaryotic elongation factor, selenocysteine-tRNA specific", "[Danio rerio:] Predicted to enable translation elongation factor activity. Predicted to be involved in selenocysteine incorporation. Predicted to act upstream of or within translation. Orthologous to human EEFSEC (eukaryotic elongation factor, selenocysteine-tRNA specific). [provided by Alliance of Genome Resources, Apr 2022]; [Homo sapiens:] Predicted to enable translation elongation factor activity. Predicted to be involved in selenocysteine incorporation. Predicted to be located in cytoplasm and nucleus. Predicted to be part of ribonucleoprotein complex. [provided by Alliance of Genome Resources, Apr 2022]", "cellular sensing"))
+
+names(dmc_ncbi) <- c("symbol", "full_name", "summary", "category")
+
+## add to dmc_ncbi
+fdmc <- fdmc %>%
+  cbind(., dmc_ncbi) %>%
+  dplyr::select(-c("gap_opens", "query_start", "query_end", "subject_start", "subject_end")) 
+
+## match them with CpG info
+
+## import results
+closest <- read.table("dataFiles/Methylkit_DMCs_top20_closest_gff3.bed",
+                      header = FALSE, sep = "\t", stringsAsFactors = FALSE,
+                      col.names = c("chrom", "start", "end", "name", 
+                                    "source", "feature", "start_gene", "end_gene", 
+                                    "score", "strand", "phase", "attributes")) %>%
+  filter(feature == "gene") %>%
+  mutate(query_id = paste0(attributes, "::", chrom, ":", start_gene, "-", end_gene, "(", strand, ")"))
+
+## matching 
+fdmcm <- closest %>%
+  mutate(cpg_id = paste0(chrom, ":", start, "-", end)) %>%
+  dplyr::select(cpg_id, query_id) %>%
+  full_join(fdmc) %>% 
+  dplyr::select(cpg_id, query_id, subject_acc_ver, bit_score, description, 
+        symbol, full_name, summary, category)
+
+## export for supp
+write.csv(fdmcm, "figuresTables/Table S[DMG].csv", row.names=F)
+```
+
+## heatmap
+
+```{r fig.width=9, fig.height=5}
+library(gplots)
+
+## get gene symbols 
+symbols <- closest %>%
+  mutate(id = paste(chrom, start, end, sep=".")) %>%
+  left_join(fdmcm) %>%
+  dplyr::select(id, symbol) %>%
+  mutate(symbol = tolower(replace_na(symbol, "Unknown")))
+
+# Get percent methylation for all samples at DMC. Include row IDs (chr, start, end) information
+percMethDMCAll <- methylKit::percMethylation(DMCMatrixAll, rowids = TRUE) 
+
+# Check that the DMC matrix was created
+# head(percMethDMCAll) 
+
+sample_info <- sample_info %>% 
+  mutate(condition = gsub("T2434", "FT", treatment) %>% 
+           gsub("T34", "HT", .) %>%
+           gsub("T28", "Control", .) %>% 
+           gsub("T24", "LT", .),
+         ## make ordered factor
+         condition = factor(condition, levels=c("Control","LT","FT","HT")), 
+         ## make control the base line for comparison
+         condition = relevel(condition, ref = "Control"))
+
+
+hmcol<- colorRampPalette(brewer.pal(9, 'PRGn'))(100)
+
+sample_info$label <- paste0(sample_info$condition, " (", sample_info$stage, ")")
+
+# Matching and replacing column names
+colnames(percMethDMCAll) <- sample_info$label[match(colnames(percMethDMCAll), 
+                                                    sample_info$sample)]
+
+rownames(percMethDMCAll) <- symbols$symbol[match(rownames(percMethDMCAll),
+                                                 symbols$id)]
+
+## make helper function to map metadata category to color
+conditionToColour<-function(x){
+  colorsVector = ifelse(x["condition"]=="LT", 
+                        "#21908CFF", ifelse(x["condition"]=="HT", 
+                                       "#ED7953FF", ifelse(x["condition"]=="FT", 
+                                                     "#8FD744FF", 
+                                                     "#3B528BFF")))
+  return(colorsVector)
+}
+
+clrs <- c("#21908CFF", "#3B528BFF", "#ED7953FF", "#8FD744FF")
+
+png("figuresTables/Figure [dmc_heatmap].png", width = 8, height = 5, units = "in", res=600)
+
+heatmap.2(percMethDMCAll,
+          scale='none', 
+          trace="none",
+          tracecol = "black",
+          col = hmcol, ## colours
+          ColSideColors=conditionToColour(sample_info),
+          margins = c(8,5),
+          key.xlab = "% Methylation",
+          key.title = "",
+          cexCol = 1,
+          cexRow = 1,
+          labRow=as.expression(lapply(rownames(percMethDMCAll), function(a) bquote(italic(.(a))))),
+          main=paste("DMCs"))
+
+legend(x=0.9, y=1.15, xpd = TRUE,
+       legend = unique(sample_info$condition),
+       col = clrs,
+       lty= 1.5,   lwd = 2,
+       cex=.6)
+
+dev.off()
+
+## print for markdown
+heatmap.2(percMethDMCAll,
+          scale='none', 
+          trace="none",
+          tracecol = "black",
+          col = hmcol, ## colours
+          ColSideColors=conditionToColour(sample_info),
+          margins = c(8,5),
+          key.xlab = "% Methylation",
+          key.title = "",
+          cexCol = 1,
+          cexRow = 1,
+          labRow=as.expression(lapply(rownames(percMethDMCAll), function(a) bquote(italic(.(a))))),
+          main=paste("DMCs"))
+
+legend(x=0.9, y=1.15, xpd = TRUE,
+       legend = unique(sample_info$condition),
+       col = clrs,
+       lty= 1.5,   lwd = 2,
+       cex=.6)
+```
+
+<!-- ## end script -->

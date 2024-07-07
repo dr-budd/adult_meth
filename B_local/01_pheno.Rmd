@@ -1,0 +1,309 @@
+---
+title: "Phenotype data"
+output:
+  html_notebook:
+    code_folding: hide
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+current_directory <- dirname(rstudioapi::getActiveDocumentContext()$path)
+knitr::opts_knit$set(root.dir=normalizePath(paste0(current_directory)))
+```
+
+```{r load_libraries, include=FALSE}
+## LOAD LIBRARIES ----
+
+library(cowplot)
+library(multcomp)
+library(data.table)
+library(broom)
+library(jpeg)
+library(ggpubr)
+library(tidyverse)
+```
+
+## 1. Length and weight data
+
+```{r}
+## IMPORT DATA ----
+
+## import data
+size_data_unmod=read.csv("dataFiles/e2_size_data.csv") %>%
+  mutate(Treatment=factor(Treatment, levels=c("Control", "LT", "FT", "HT")),
+         Length.cm=Length.mm/10,
+         Weight.g=Weight.kg*1000)
+
+## STATS ----
+
+## mean sd ----
+
+## calculate mean SD
+size_data_msd=size_data_unmod %>% 
+  group_by(Treatment) %>% 
+  summarise("Mean Length (mm)"=round(mean(Length.mm, na.rm=T),4),
+            "SD Length"=round(sd(Length.mm, na.rm=T),4), 
+            "Mean Weight (kg)"=round(mean(Weight.kg, na.rm=T),4), 
+            "SD Weight"=round(sd(Weight.kg, na.rm=T),4))
+
+## ** export table? 
+size_data_msd
+```
+
+```{r fig.width=20, fig.height=7}
+## weight glht ----
+
+## stats (weight)
+aov_results <- aov(Weight.kg ~ Treatment, data=size_data_unmod)
+tukey_results <- summary(glht(aov_results, linfct=mcp(Treatment="Tukey")), test=adjusted("BH"))
+
+weight_cld <- as.data.frame(cld(tukey_results)$mcletters$Letters, rownames=NULL) %>%
+ rownames_to_column(var="Treatment") %>%
+ rename_with(~ ifelse(grepl("Letters", .x), "Letters", .x)) %>%
+  mutate(Type="Weight") %>%
+  mutate(Letters=toupper(Letters))
+
+## stats (length)
+aov_results <- aov(Length.cm ~ Treatment, data=size_data_unmod)
+tukey_results <- summary(glht(aov_results, linfct=mcp(Treatment="Tukey")), test=adjusted("BH"))
+
+length_cld <- as.data.frame(cld(tukey_results)$mcletters$Letters, rownames=NULL) %>%
+ rownames_to_column(var="Treatment") %>%
+ rename_with(~ ifelse(grepl("Letters", .x), "Letters", .x)) %>%
+  mutate(Type="Length")
+
+size_data <- size_data_unmod %>%
+  dplyr::select(Treatment, Length.cm, Weight.kg) %>%
+  rename(Length = Length.cm, Weight=Weight.kg) %>%
+  pivot_longer(cols=c(Length, Weight), 
+               names_to="Type", values_to="Value") %>%
+  left_join(rbind(length_cld, weight_cld)) %>%
+  group_by(Type, Treatment) %>%
+  mutate(ylabelpos=max(Value)) %>%
+  mutate(Treatment=factor(Treatment, levels=c("Control", "LT", "FT", "HT")))
+
+mycolours <- c("#3B528BFF", "#21908CFF", "#8FD744FF", "#ED7953FF")
+```
+
+```{r}
+## plot together
+ln_wt<-ggplot(size_data %>%
+                mutate(Value2 = ifelse(Type == "Weight", Value*21, Value),
+                       ylabelpos2 = ifelse(Type == "Weight", ylabelpos*21, ylabelpos)), 
+           aes(x=Treatment, y=Value2, fill=Treatment, alpha=Type))+ 
+  geom_boxplot(show.legend = F)+
+  geom_point(show.legend = F,
+             pch=21,
+             position = position_dodge(width = 0.75))+
+  theme_light()+
+  xlab("Treatment")+
+  scale_fill_manual(values=mycolours, guide="none")+
+  scale_alpha_manual(values=c(0.9, 0.5), name="Measure")+#, guide="none")+
+  theme(legend.position="bottom")+
+  geom_text(aes(label=Letters, 
+                y=ylabelpos2*1.1),
+            check_overlap=TRUE,
+            colour="black",
+            position = position_dodge(width = 0.75))+
+  scale_y_continuous(name="Length (cm)", ## /21
+                     sec.axis=sec_axis(~./21, name="Weight (kg)"))+
+  guides(alpha=guide_legend(override.aes = list(label=c("a", "A"))))
+
+ln_wt
+```
+
+## 2. Gonad staging
+
+```{r}
+## need to cross check data with RNASeq AND PhD THESIS****
+stages<-read.csv("dataFiles/e2_stage_data.csv") %>%
+  select(-Sample) %>%
+  mutate(Treatment=factor(Treatment, levels=c("Control", "LT", "FT", "HT")))
+
+stages$Stage<-factor(stages$Stage, levels=c("M1", "M2", "M3", "T1", "T2", "F2"))
+
+colours <- c("#3B528BFF", "#2C728EFF", "#21908CFF",
+             "#85D54AFF", "#C2DF23FF",
+             "#ED7953FF")
+
+gs<-ggplot(stages, aes(x=Treatment, fill=Stage))+
+  geom_bar()+
+  theme_light()+
+  scale_fill_manual(values=colours)+
+  ylab("Number of fish")+
+  labs(fill = "Gonad\nstage")+
+  theme(legend.position="bottom")+
+  guides(fill=guide_legend(nrow=1))
+  
+gs
+```
+
+## 3. Histology
+
+```{r}
+## representative images ----
+LT<-readJPEG("dataFiles/jpegs/24A_F2_s_a.jpeg")
+Control <-readJPEG("dataFiles/jpegs/28B_F3_s_a.jpeg")
+HT<-readJPEG("dataFiles/jpegs/34B_F2_s_a.jpeg")
+FT<-readJPEG("dataFiles/jpegs/FA_F2_s_a.jpeg")
+
+LTd<-ggdraw()+
+  draw_image(LT, clip="on")+
+  theme(panel.border = element_rect(colour = "grey70", fill=NA, linewidth=0.25))
+
+Controld<-ggdraw()+
+  draw_image(Control, clip="on")+
+  theme(panel.border = element_rect(colour = "grey70", fill=NA, linewidth=0.25))
+
+HTd<-ggdraw()+
+  draw_image(HT, clip="on")+
+  theme(panel.border = element_rect(colour = "grey70", fill=NA, linewidth=0.25))
+
+FTd<-ggdraw()+
+  draw_image(FT, clip="on")+
+  theme(panel.border = element_rect(colour = "grey70", fill=NA, linewidth=0.25))
+
+FTd
+
+hs <- plot_grid(Controld, LTd, FTd, HTd,
+                labels=c("Control", "LT", "FT", "HT"),
+                label_size=10,
+                hjust=0.5,
+                label_x=0.5,
+                label_y=1,
+                ncol=4)
+
+print(hs)
+```
+
+## 4. Point of inflection
+
+```{r}
+## import data
+ltmp_data_unmod<-read.csv("dataFiles/ltmp_data.csv")
+# names(ltmp_data_unmod)
+
+## DATA HANDLING ----
+
+## all LTMP data ----
+ltmp_data <- ltmp_data_unmod %>%
+  filter(SexCode!="5") %>% 
+  filter(SexCode!="6") %>% 
+  mutate(Sex = SexCode-1) %>%
+  # remove outliers
+  filter(AgeClass < 24)
+
+## AGE ----
+model_age <- glm(data = ltmp_data, Sex ~ AgeClass, binomial)
+
+coefficients <- coef(model_age)
+point_of_inflection <- -coefficients[1] / coefficients[2]
+# point_of_inflection
+
+binomial_glm_age<-ggplot(data = ltmp_data,
+                         aes(x = AgeClass, y = Sex)) +
+  geom_point(size=1, alpha=0.2) +
+  geom_smooth(method='glm',
+              method.args = list(family='binomial'),
+              linewidth=0.5) +
+  theme(legend.key = element_rect(fill = "white")) +
+  labs(colour = "")+
+  theme_bw() +
+  xlab("Age (years)") +
+  ylab("Proportion female") +
+  geom_vline(xintercept=point_of_inflection)+
+  annotate("text", x = point_of_inflection, y = 0.75, 
+           label = paste0("Point of inflection: \n", 
+                          round(point_of_inflection, digits=2), 
+                          " years"), 
+           colour = "black", angle = 90, vjust = -0.5, size=3.5) +
+  annotate("text", x = 15, y = 0.25, 
+           label = paste0("n=", 
+                          nrow(ltmp_data)), 
+           colour = "black", vjust = -0.5) 
+
+# binomial_glm_age
+
+## LENGTH ----
+
+model_length <- glm(data = ltmp_data, Sex ~ tl, binomial)
+
+coefficients <- coef(model_length)
+point_of_inflection <- -coefficients[1] / coefficients[2]
+# point_of_inflection
+
+binomial_glm_length<-ggplot(data = ltmp_data,
+                         aes(x = tl, y = Sex)) +
+  geom_point(size=1, alpha=0.2) +
+  geom_smooth(method='glm',
+              method.args = list(family='binomial'),
+              linewidth=0.5) +
+  theme(legend.key = element_rect(fill = "white")) +
+  labs(colour = "")+
+  theme_bw() +
+  xlab("Length (mm)") +
+  ylab("Proportion female") +
+  geom_vline(xintercept=point_of_inflection)+
+  annotate("text", x = point_of_inflection, y = 0.75, 
+           label = paste0("Point of inflection: \n", 
+                          round(point_of_inflection), 
+                          " mm"), 
+           colour = "black", angle = 90, vjust = -0.5, size=3.5) +
+  annotate("text", x = 1100, y = 0.25, 
+           label = paste0("n=", 
+                          nrow(ltmp_data)), 
+           colour = "black", vjust = -0.5) 
+
+# binomial_glm_length
+
+## COMBINE ----
+fig <- ggarrange(binomial_glm_age, binomial_glm_length, nrow=1, labels=c("A", "B"))
+
+fig
+
+# min(ltmp_data$yr)
+# max(ltmp_data$yr)
+
+ggsave("figuresTables/Figure S[inflection].pdf", fig, width=8, height=11/3, units="in")
+ggsave("figuresTables/Figure S[inflection].png", fig, width=8, height=11/3, units="in")
+```
+
+## 5. Diagram 
+
+```{r fig.width=8, fig.height=1.25}
+## import diagram
+dgrm<-readJPEG("dataFiles/jpegs/c4_figure_diagram.jpg")
+
+dgrmd<-ggdraw()+
+  draw_image(dgrm)
+
+dgrmd
+```
+
+## Figure
+
+```{r fig.width=8.75, fig.height=8}
+fw=8.75
+fh=11.25*0.6
+
+top <- ggarrange(gs, ln_wt, labels=c("A", "B"))
+
+bottom <- ggarrange(hs, dgrmd, 
+                    labels=c("C", "D"),
+                    heights=c(0.5, 0.3),
+                    nrow=2)
+
+combo <- ggarrange(top,
+                   bottom,
+                   heights=c(1, 0.8),
+                   nrow=2)
+
+combo
+
+## save
+ggsave(plot=combo, filename="figuresTables/Figure [phenoV3].pdf",
+       device="pdf", width=8.75, height=8, units=c("in"))
+ggsave(plot=combo, filename="figuresTables/Figure [phenoV3].png",
+       device="pdf", width=8.75, height=8, units=c("in"))
+```

@@ -1,0 +1,50 @@
+#!/bin/bash
+
+## specify job checkpoint interval (-c) but only when the server executing the job is shutdown (s).
+#PBS -c s
+## merge standard output and standard error streams into the named file.
+#PBS -j oe
+## send mail at batch job abort/exit to the email address provided.
+#PBS -m ae
+## advise the scheduler how many nodes/chunks, processors/cpus and how much memory
+#PBS -l select=1:ncpus=1:mem=96gb
+## advise the scheduler that this job will have completed within HH:MM:SS.
+#PBS -l walltime=99:00:00
+## specify the job name
+#PBS -N bismark_genome_preparation
+
+###
+# Organisation :JCU
+#
+# Author :Alyssa
+###
+
+## This script runs bismark genome preparation to create C-T and G-A 
+## versions of the genome and then indexes them using bowtie-build 
+
+##  specify where to find module load command
+shopt -s expand_aliases
+source /etc/profile.d/modules.sh
+
+## load bowtie2, samtools, and bismark
+module load bowtie2/2.4.4
+module load samtools/1.13
+module load bismark/0.23.1
+module list
+
+## navigate to directory containing this script
+cd $PBS_O_WORKDIR
+
+## print some helpful information
+echo "Job identifier is $PBS_JOBID"
+echo "Working directory is $PBS_O_WORKDIR"
+
+## add genome directory as a variable
+genomedir=$PWD/../genome
+
+## run bismark genome preparation
+## usage: bismark_genome_preparation [options] <path_to_genome_folder>
+
+bismark_genome_preparation --verbose $genomedir
+
+## end script
