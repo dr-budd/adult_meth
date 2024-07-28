@@ -2,3 +2,4 @@ dataFiles/
 figuresTables/
 *.html
 .Rhistory
+.DS_Store
