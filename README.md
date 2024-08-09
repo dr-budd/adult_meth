@@ -1,12 +1,12 @@
-# Adult methylation
+# :fish::dna: Effects of temperature on DNA methylation and sex in adult barramundi
 
 Analysis pipeline for:
 
->Budd et al. (*in prep*) Mechanisms driving temperature-induced early sex change in barramundi (*Lates calcarifer*)
+>Budd et al. (*submitted*) Mechanisms driving temperature-induced early sex change in barramundi (*Lates calcarifer*)
 
 ---
 
-## Structure
+## :file_folder: Structure
 
 The code is separated into the following two folders:
 
@@ -14,15 +14,15 @@ The code is separated into the following two folders:
 
 `B_local` - Contains all scripts run locally. 
 
-## Data
+## :chart_with_upwards_trend: Data
 
 Raw sequence data and metadata will be archived in the Dryad data repository upon acceptance of the manuscript.
 
-## Author
+## :woman_technologist: Author
 Alyssa Budd (alyssa.budd@my.jcu.edu.au)
 
-## Acknowledgements
+## :bouquet: Acknowledgements
 Scripts were developed in collaboration with Queensland Facility for Advanced Bioinformatics (QFAB). Specifically, Mike Thang wrote the original code for WGBS methlylation calling and Anne Bernard drafted the code for running multiple comparisons between treatments for the RNAseq count data.
 
-## License
+## :copyright: License
 This project is licensed under the GNU General Public License - see the [LICENSE](LICENSE.txt) file for details.
