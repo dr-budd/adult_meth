@@ -1,0 +1,167 @@
+---
+title: "methylKit global analysis"
+output:
+  html_notebook:
+    code_folding: none
+---
+
+```{r setup, include=FALSE}
+current_directory <- dirname(rstudioapi::getActiveDocumentContext()$path)
+knitr::opts_knit$set(root.dir=normalizePath(paste0(current_directory)))
+```
+
+```{r load_libraries, include=FALSE}
+## load libraries 
+library(methylKit)
+library(gplots)
+library(tidyverse)
+```
+
+```{r}
+## takes ages
+
+## import
+myobj.filt.norm <- readRDS("dataFiles/myobj_filt_norm.rds")
+
+## read in a table that contains the sample IDs
+sample_info <- read.table("dataFiles/sample_information_DNA.txt", header=TRUE)
+
+## extract the bases that are covered by reads in all our samples
+meth <- methylKit::unite(myobj.filt.norm)
+
+## get percent methylation
+meth_percent_unmod = percMethylation(meth, rowids = TRUE)
+```
+
+```{r}
+## edit df
+avg_meth_percent <- as.data.frame(meth_percent_unmod) %>%
+  rownames_to_column(var="cpg_id") %>%
+  separate(col = cpg_id, into = c("chr", "cpg_coords"), sep = "\\.", extra = "merge") %>%
+  select(-cpg_coords) %>%
+  group_by(chr) %>%
+  summarise(across(contains("D"), ~ mean(.x, na.rm = TRUE))) %>%
+  column_to_rownames(var="chr")
+```
+
+```{r}
+## calculate global %'s
+
+## extract data
+meth_data <- getData(meth)
+
+## Extract sample IDs
+sample_ids <- meth@sample.ids
+
+## Initialize vector to store global methylation values
+global_methylation <- numeric(length(sample_ids))
+
+## Calculate global methylation for each sample
+for (i in seq_along(sample_ids)) {
+ numCs_col <- paste0("numCs", i)  # Get correct numCs column
+ numTs_col <- paste0("numTs", i)  # Get correct numTs column
+ 
+ global_methylation[i] <- sum(meth_data[[numCs_col]], na.rm = TRUE) / 
+  sum(meth_data[[numCs_col]] + meth_data[[numTs_col]], na.rm = TRUE) * 100
+}
+
+## Assign names to global methylation values
+names(global_methylation) <- sample_ids
+
+global_methylation_df <- as.data.frame(global_methylation) %>%
+ rownames_to_column(., var="ID")
+
+sample_info <- sample_info %>%
+ left_join(global_methylation_df) %>%
+ mutate(global_methylation = round(global_methylation, digits=0))
+```
+
+```{r}
+## create labels 
+sample_info <- sample_info %>% 
+  mutate(condition = gsub("T2434", "FT", treatment) %>% 
+           gsub("T34", "HT", .) %>%
+           gsub("T28", "Control", .) %>% 
+           gsub("T24", "LT", .),
+         ## make ordered factor
+         condition = factor(condition, levels=c("Control","LT","FT","HT")), 
+         ## make control the base line for comparison
+         condition = relevel(condition, ref = "Control"))
+
+sample_info$labels <- paste0(sample_info$condition, 
+                             " (", sample_info$stage, "; ",
+                             sample_info$global_methylation, "%)")
+
+## ensure column names match IDs in sample_info
+matched_labels <- sample_info$labels[match(colnames(avg_meth_percent), sample_info$ID)]
+
+## replace column names in avg_meth_percent with their corresponding labels
+colnames(avg_meth_percent) <- matched_labels
+
+avg_meth_perc_mat <- t(as.matrix(avg_meth_percent))
+```
+
+```{r fig.width=8.75, fig.height=5}
+# Define custom color gradient
+
+library(RColorBrewer)
+hmcol<- colorRampPalette(brewer.pal(9, 'PRGn'))(100)
+
+## make helper function to map metadata category to color
+conditionToColour<-function(x){
+  colorsVector = ifelse(x["condition"]=="LT", 
+                        "#21908CFF", ifelse(x["condition"]=="HT", 
+                                       "#ED7953FF", ifelse(x["condition"]=="FT", 
+                                                     "#8FD744FF", 
+                                                     "#3B528BFF")))
+  return(colorsVector)
+}
+
+clrs <- c("#21908CFF", "#3B528BFF", "#ED7953FF", "#8FD744FF")
+
+png("figuresTables/Figure [global_heatmap].png", width = 8.75, height = 5, units = "in", res=600)
+
+heatmap.2(avg_meth_perc_mat,
+          scale='none', 
+          trace="none",
+          tracecol = "black",
+          col = hmcol, ## colours
+          RowSideColors=conditionToColour(sample_info),
+          margins = c(9,9),
+          key.title = "",
+          cexCol = 1,
+          cexRow = 1,
+          main=paste("Global DNA methylation"))
+
+legend(x=0.9, y=1.15, xpd = TRUE,
+       legend = unique(sample_info$condition),
+       col = clrs,
+       lty= 1.5,   lwd = 2,
+       cex=.6)
+
+dev.off()
+
+heatmap.2(avg_meth_perc_mat,
+          scale='none', 
+          trace="none",
+          tracecol = "black",
+          col = hmcol, ## colours
+          RowSideColors=conditionToColour(sample_info),
+          margins = c(11,9),
+          key.title = "",
+          key.xlab = "% Methylation",  # Custom label for color key
+          cexCol = 1,
+          cexRow = 1,
+          main=paste("Global DNA methylation"))
+
+legend(x=0.9, y=1.15, xpd = TRUE,
+       legend = unique(sample_info$condition),
+       col = clrs,
+       lty= 1.5,   lwd = 2,
+       cex=.6)
+```
+Legend: Heatmap of DNA methylation across chromosomes among treatments and gonadal development stages in barramundi (Lates calcarifer). Chromosomes (columns) are labelled as ASB_LG#, where 'ASB' denotes Asian seabass, and 'LG#' refers to linkage groups derived from genetic linkage mapping (Vij et al., 2016). Samples (rows) are labelled by treatment, and in brackets by gonadal development stage, followed by the total percent methylation across all chromosomes, i.e., whole-genome methylation percentage. M1–M4 represent male stages, T1–T4 represent transitional stages, and F1–F4 represent female stages, as described by Guiguen et al. (1994). Tissue samples were collected from barramundi gonads following temperature exposure between 12 and 24 months post-hatch. Row colours indicate different treatments (Control: 28 °C, LT: low temperature; 24 °C, FT: fluctuating temperature 24 - 34 °C, HT: high temperature; 34 °C). Hierarchical clustering was performed using Euclidean distance to calculate pairwise similarities and complete linkage for agglomeration, grouping both rows (samples) and columns (chromosomes) based on the most dissimilar elements within each cluster.
+
+
+
+<!-- ## end script -->

@@ -21,6 +21,7 @@ library(data.table)
 library(broom)
 library(jpeg)
 library(ggpubr)
+library(logistf)
 library(tidyverse)
 ```
 
@@ -42,12 +43,11 @@ size_data_unmod=read.csv("dataFiles/e2_size_data.csv") %>%
 ## calculate mean SD
 size_data_msd=size_data_unmod %>% 
   group_by(Treatment) %>% 
-  summarise("Mean Length (mm)"=round(mean(Length.mm, na.rm=T),4),
-            "SD Length"=round(sd(Length.mm, na.rm=T),4), 
+  summarise("Mean Length (cm)"=round(mean(Length.cm, na.rm=T),4),
+            "SD Length"=round(sd(Length.cm, na.rm=T),4), 
             "Mean Weight (kg)"=round(mean(Weight.kg, na.rm=T),4), 
             "SD Weight"=round(sd(Weight.kg, na.rm=T),4))
 
-## ** export table? 
 size_data_msd
 ```
 
@@ -81,12 +81,13 @@ size_data <- size_data_unmod %>%
   left_join(rbind(length_cld, weight_cld)) %>%
   group_by(Type, Treatment) %>%
   mutate(ylabelpos=max(Value)) %>%
-  mutate(Treatment=factor(Treatment, levels=c("Control", "LT", "FT", "HT")))
+  mutate(ypos = if_else(Type == "Length", mean(Value) + 30, mean(Value) * 10 + 5.5)) %>%  # adjust if needed
+  mutate(Treatment=factor(Treatment, levels=c("Control", "LT", "FT", "HT"))) 
 
 mycolours <- c("#3B528BFF", "#21908CFF", "#8FD744FF", "#ED7953FF")
 ```
 
-```{r}
+```{r fig.width=4, fig.height=4}
 ## plot together
 ln_wt<-ggplot(size_data %>%
                 mutate(Value2 = ifelse(Type == "Weight", Value*21, Value),
@@ -102,8 +103,10 @@ ln_wt<-ggplot(size_data %>%
   scale_alpha_manual(values=c(0.9, 0.5), name="Measure")+#, guide="none")+
   theme(legend.position="bottom")+
   geom_text(aes(label=Letters, 
-                y=ylabelpos2*1.1),
+                # y=ylabelpos2*1.1),
+                y=ypos),
             check_overlap=TRUE,
+            size=3,
             colour="black",
             position = position_dodge(width = 0.75))+
   scale_y_continuous(name="Length (cm)", ## /21
@@ -113,12 +116,51 @@ ln_wt<-ggplot(size_data %>%
 ln_wt
 ```
 
+```{r fig.width=4, fig.height=4}
+# Version 2
+
+size_labels <- size_data_msd %>%
+  rename(
+    Mean_Length = `Mean Length (cm)`,
+    SD_Length = `SD Length`,
+    Mean_Weight = `Mean Weight (kg)`,
+    SD_Weight = `SD Weight`) %>%
+  pivot_longer(
+    cols = -Treatment,
+    names_to = c("Stat", "Measure"),
+    names_sep = "_"
+  ) %>%
+  pivot_wider(
+    names_from = Stat,
+    values_from = value
+  ) %>%
+  mutate(
+    # label = paste0(round(Mean, digits=1), " ± ", round(SD, digits=1), if_else(Measure == "Length", " cm", " kg")),
+    label = paste0(round(Mean, digits=1), if_else(Measure == "Length", " cm", " kg"), "\n(± ", round(SD, digits=1), ")"),
+    Type = Measure,
+    ypos = if_else(Measure == "Length", Mean + 23, Mean * 10 - 2)  # adjust if needed
+  )
+
+ln_wt_2 <- ln_wt + 
+  geom_text(
+    data = size_labels,
+    aes(x = Treatment, y = ypos, label = label, alpha = Type),
+    position = position_dodge(width = 0.75),
+    size = 3,
+    show.legend = FALSE
+  )+
+  scale_y_continuous(name="Length (cm)", ## /21
+                     limits=c(15,90),
+                     sec.axis=sec_axis(~./21, name="Weight (kg)"))
+
+ln_wt_2
+```
+
 ## 2. Gonad staging
 
 ```{r}
-## need to cross check data with RNASeq AND PhD THESIS****
 stages<-read.csv("dataFiles/e2_stage_data.csv") %>%
-  select(-Sample) %>%
+  # select(-Sample) %>%
   mutate(Treatment=factor(Treatment, levels=c("Control", "LT", "FT", "HT")))
 
 stages$Stage<-factor(stages$Stage, levels=c("M1", "M2", "M3", "T1", "T2", "F2"))
@@ -137,6 +179,27 @@ gs<-ggplot(stages, aes(x=Treatment, fill=Stage))+
   guides(fill=guide_legend(nrow=1))
   
 gs
+```
+
+## Stats for temp ~ sex (+ weight)
+
+```{r}
+stage_size <- size_data_unmod %>%
+  mutate(Sample = paste(gsub("E2.24.", "", SampleCode), FishNo, sep=".")) %>%
+  full_join(stages) %>%
+  na.omit(.) %>%
+  mutate(Sexish = ifelse(grepl("M", Stage), "Male", "Non-male")) %>% 
+  mutate(Sexish = factor(Sexish, levels=c("Male", "Non-male")))
+
+## fit model
+model_firth <- logistf(Sexish ~ Treatment, data = stage_size)
+summary(model_firth)
+```
+
+```{r}
+## fit model (include weight)
+model_firth_weight <- logistf(Sexish ~ Treatment + Weight.g, data = stage_size)
+summary(model_firth_weight)
 ```
 
 ## 3. Histology
@@ -287,7 +350,7 @@ dgrmd
 fw=8.75
 fh=11.25*0.6
 
-top <- ggarrange(gs, ln_wt, labels=c("A", "B"))
+top <- ggarrange(gs, ln_wt_2, labels=c("A", "B"))
 
 bottom <- ggarrange(hs, dgrmd, 
                     labels=c("C", "D"),
@@ -302,8 +365,9 @@ combo <- ggarrange(top,
 combo
 
 ## save
-ggsave(plot=combo, filename="figuresTables/Figure [phenoV3].pdf",
+ggsave(plot=combo, filename="figuresTables/Figure [phenoV3].pdf", dpi=600,
        device="pdf", width=8.75, height=8, units=c("in"))
-ggsave(plot=combo, filename="figuresTables/Figure [phenoV3].png",
+
+ggsave(plot=combo, filename="figuresTables/Figure [phenoV3].png", dpi=600,
        device="pdf", width=8.75, height=8, units=c("in"))
 ```

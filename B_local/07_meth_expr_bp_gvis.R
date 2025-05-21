@@ -517,9 +517,9 @@ hs <- plot_grid(cyp19a1a, dmrt1,
                 ncol=1)
 
 ggplot2::ggsave(plot=hs, filename="figuresTables/Figure [singlebp].pdf",
-       device="pdf", width=8.75, height=8, units=c("in"))
+       device="pdf", width=8.75, height=8, units=c("in"), dpi=600)
 
 ggplot2::ggsave(plot=hs, filename="figuresTables/Figure [singlebp].png",
-                width=8.75, height=8, units=c("in"))
+                width=8.75, height=8, units=c("in"), dpi=600)
 
 ## end script

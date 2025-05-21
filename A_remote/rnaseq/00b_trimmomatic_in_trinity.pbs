@@ -1,0 +1,47 @@
+#!/bin/bash
+
+# specify job checkpoint interval (-c) but only when the server executing the job is shutdown (s).
+#PBS -c s
+# merge standard output and standard error streams into the named file.
+#PBS -j oe
+# set the name of the job
+#PBS -N TrimmomaticInTrinity
+# send mail at batch job abort/exit to the email address provided.
+#PBS -m ae
+# advise the scheduler about the amount of physical memory required.
+#PBS -l pmem=120gb
+# Advise the scheduler that the job requires # cpu (ppn) from # node.
+#PBS -l nodes=1:ppn=40
+#Advise the scheduler that this job will have completed within 99 hours.
+#PBS -l walltime=999:00:00
+#Send mail at batch job abort/exit to the Email address provided.
+#PBS -M jc303676@my.jcu.edu.au
+
+source /etc/profile.d/modules.sh
+module load jellyfish
+module load bowtie2
+module load samtools
+module load trinityrnaseq/2.6.6
+module load salmon/0.9.1
+module load java
+
+#Assembly of Barra gonads
+#Samples: All of second seq run
+#20191111
+
+#makes comma separated list of R corrected reads
+R1=$(ls -1 /rdsi/vol08/homes/jc303676/AGRF_RNASEQ_CAGRF18986/AGRF_CAGRF18986_CD27YANXX/RawData/CD27YANXX_CorrectedReads/*R1.cor.fq | tr '\n' ',')
+R2=$(ls -1 /rdsi/vol08/homes/jc303676/AGRF_RNASEQ_CAGRF18986/AGRF_CAGRF18986_CD27YANXX/RawData/CD27YANXX_CorrectedReads/*R2.cor.fq | tr '\n' ',')
+
+#defines output folder
+outputFolder=/rdsi/vol08/homes/jc303676/AGRF_RNASEQ_CAGRF18986/CD27YANXX_TrinityTrimmedReads
+
+#defines run parameters for trinity
+CPU=40
+MEM=120G
+
+#runs trinity
+/sw/trinityrnaseq/2.6.6/Trinity --seqType fq --max_memory $MEM --trimmomatic --left $R1 --right $R2 --SS_lib_type RF --CPU $CPU --output $outputFolder --quality_trimming_params "ILLUMINACLIP:/rdsi/vol08/homes/jc303676/Databases/TruSeq3-PE-2_mod.fa:2:40:15 LEADING:2 TRAILING:2 MINLEN:25"
+
+### End Script ###
+

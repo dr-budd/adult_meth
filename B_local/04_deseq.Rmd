@@ -54,7 +54,7 @@ sample_table <- read.table("dataFiles/sample_information_RNA.txt", header=TRUE) 
   mutate(seq.run = factor(seq.run), 
          ## make stage ordered factor
          stage = factor(stage, levels=c("M1", "M2", "M3", "T1", "T2", "F2")), 
-         ## make column for condition and fish no (used? **)
+         ## make column for condition and fish no (used?)
          condition = treatment, 
          FishNo = rep(1:5, 4),
          ## rename treatments in condition column
@@ -671,10 +671,10 @@ hs <- plot_grid(deg_hm, dmc_hm,
 hs
 
 ggplot2::ggsave(plot=hs, filename="figuresTables/Figure [heatmap].pdf",
-       device="pdf", width=8, height=10, units=c("in"))
+       device="pdf", width=8, height=10, units=c("in"), dpi=600)
 
 ggplot2::ggsave(plot=hs, filename="figuresTables/Figure [heatmap].png",
-       device="png", width=8, height=10, units=c("in"))
+       device="png", width=8, height=10, units=c("in"), dpi=600)
 ```
 
 

@@ -47,7 +47,7 @@ supp <- plot_grid(plotlist=plot_list_t,
                 ncol=4)
 
 ## save
-ggsave("../../figuresTables/Figure S[histo].pdf", supp, width=7, height=9)
-ggsave("../../figuresTables/Figure S[histo].png", supp, width=7, height=9)
+ggsave("../../figuresTables/Figure S[histo].pdf", supp, width=7, height=9, dpi=600)
+ggsave("../../figuresTables/Figure S[histo].png", supp, width=7, height=9, dpi=600)
 
 ## end script

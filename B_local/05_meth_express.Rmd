@@ -781,7 +781,7 @@ p
 ```
 
 ```{r}
-ggsave("figuresTables/Figure [meth_express2].png", width=11, height=12, units="in")
-ggsave("figuresTables/Figure [meth_express2].pdf", width=11, height=12, units="in")
+ggsave("figuresTables/Figure [meth_express2].png", width=11, height=12, units="in", dpi=600)
+ggsave("figuresTables/Figure [meth_express2].pdf", width=11, height=12, units="in", dpi=600)
 ```
 
