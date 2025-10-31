@@ -1,8 +1,13 @@
 # :fish::dna: Effects of temperature on DNA methylation and sex in adult barramundi
 
-Analysis pipeline for:
+## :page_facing_up: Associated Publication
 
->Budd et al. (*submitted*) Mechanisms driving temperature-induced early sex change in barramundi (*Lates calcarifer*)
+[![Journal](https://img.shields.io/badge/Published_in-Aquaculture-6E1E78.svg)](https://doi.org/10.1016/j.aquaculture.2025.742882)
+
+> **Budd, A.M.**, Huerlimann, R., Guppy, J.L., Pinto, R.C.C., Domingos, J.A. & Jerry, D.R. (2026).  
+> Mechanisms driving temperature-induced early sex change in barramundi (*Lates calcarifer*).  
+> *Aquaculture*, **610**, 742882.  
+> [https://doi.org/10.1016/j.aquaculture.2025.742882](https://doi.org/10.1016/j.aquaculture.2025.742882)
 
 ---
 
