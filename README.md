@@ -21,7 +21,8 @@ The code is separated into the following two folders:
 
 ## :chart_with_upwards_trend: Data
 
-Raw sequence data and metadata will be archived in the Dryad data repository upon acceptance of the manuscript.
+Raw sequence data and metadata are available in the NCBI Sequence Read Archive under BioProject accession PRJNA1263116, with BioSample accessions SAMN48511396-SAMN48511415. 
+SRA accessions for RNA-seq data are SRR33638345-SRR33638356, and for WGBS data are SRR33696300 - SRR33696311.
 
 ## :woman_technologist: Author
 Alyssa Budd (alyssa.budd@my.jcu.edu.au)
